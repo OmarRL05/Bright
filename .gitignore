@@ -1,0 +1,32 @@
+# --- Python (backend) ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+backend/.env
+
+# --- Node / Next.js (frontend) ---
+node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env.local
+frontend/.env*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-store/
+
+# --- Datasets pesados (ver backend/data/README.md) ---
+backend/data/*.graphml
+backend/data/*.csv
+
+# --- OS / editor ---
+.DS_Store
+.vscode/
+.idea/
+*.swp
