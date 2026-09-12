@@ -1,8 +1,35 @@
 # Plan — Bloque 3: Motor de Decisión en Tiempo Real (Persona B)
 
-> Estado: **planeación**, sin código todavía. Ver `docs/01_Arquitectura.md` sección 3
-> (Bloque 3) y sección 6 (reglas de estabilidad), y `docs/02_Documentacion_Tecnica.md`
-> sección 1 para el vocabulario (cheapest insertion, frozen horizon, histéresis).
+> Estado: **planeación**, sin código todavía en Bloque 3. Ver `docs/01_Arquitectura.md`
+> sección 3 (Bloque 3) y sección 6 (reglas de estabilidad), y
+> `docs/02_Documentacion_Tecnica.md` sección 1 para el vocabulario (cheapest
+> insertion, frozen horizon, histéresis).
+>
+> **Revisión 2** (misma esencia y estructura que la v1; se ajustan las secciones
+> 3, 5, 7, 9 y 11 con lo que ya se implementó en el resto del repo — ver sección 0).
+
+## 0. Estado actual del repo (contexto para arrancar la implementación)
+
+El repo ya no está en el punto "puro scaffold" de la v1 de este plan. Ahora vive
+en la rama `merge` (fusión de `feat/b5` + una rama de simulación), con esto
+implementado:
+
+| Bloque | Archivo | Estado real |
+|---|---|---|
+| 1 (Persona A) | `core/simulation/engine.py` | **Implementado** (versión inicial): genera `Offer`/`RoadEvent` sintéticos reproducibles por seed, sobre 4 zonas fijas (ver sección 7). Sin dataset Kaggle todavía (`TODO` explícito en el propio archivo). |
+| 2 (Persona A) | `core/simulation/state.py` | Sin cambios vs. v1 — ya estaba implementado y con tests en verde. |
+| 4 (¿Persona C?) | `core/optimization/ortools_optimizer.py` (**archivo nuevo**, no es el que describe `docs/01_Arquitectura.md` sección 7) | **Implementado y funcional en aislamiento** (VRPTW real con OR-Tools, hilo + cola de prioridad, histéresis), pero con **su propio modelo de datos** (`Node`, `EstadoRuta`, `RutaOptimizada`, `StateManagerProtocol`) que **no coincide** con `core/models.py` ni con `CourierStateManager` reales (ver sección 11, riesgo nuevo #6). |
+| 4 (ubicación original) | `core/routing/ortools_optimizer.py` | Sigue siendo el stub original (`NotImplementedError`), sin tocar. |
+| 5 (Persona C) | `core/routing/graph.py` | **Sigue siendo el stub original** — `shortest_path_time` y `apply_road_event` siguen en `NotImplementedError`. Solo se agregó infraestructura (`data/datacreate.py` para descargar el grafo, y caché de OSMnx), no la lógica. |
+| 3 (Persona B, este bloque) | `decision.py`, `greedy.py`, `llm_log.py` | Sin cambios — siguen como stub, es lo que vamos a implementar. |
+
+**Conclusión para el plan:** lo que de verdad importa para Bloque 3 no cambió —
+Bloque 5 (la dependencia real de "distancias") sigue sin implementar, así que el
+placeholder euclidiano de la sección 3 sigue siendo necesario, no opcional. Lo
+que sí cambia es que ahora hay evidencia concreta (no hipotética) de que los
+contratos compartidos se están divergiendo entre bloques, lo cual refuerza — no
+cambia — la recomendación de aislar Bloque 3 detrás de sus propios `Protocol`s
+en vez de asumir cómo va a verse la interfaz final de Bloque 4/5.
 
 ## 1. Alcance del bloque
 
@@ -83,6 +110,22 @@ class DistanceProvider(Protocol):
 **Pregunta para el checkpoint de equipo:** ¿Persona C puede alinear `graph.py` a
 este `Protocol` (mismos nombres de método) para no necesitar un adaptador después?
 
+**Actualización (revisión 2):** `graph.py` sigue exactamente igual que en la v1
+de este plan (`shortest_path_time`/`apply_road_event` en `NotImplementedError`),
+así que este placeholder sigue siendo un bloqueante real a resolver por Bloque 3
+mismo, no una precaución de sobra. Además, ahora existe
+`core/optimization/ortools_optimizer.py` (Bloque 4, implementado) que define su
+**propio** `TopologyEngineProtocol.get_distance_matrix(nodos: list[Node]) -> list[list[int]]`
+— una interfaz por lotes sobre un tipo `Node` propio, distinta tanto de
+`graph.py` como del `DistanceProvider` propuesto aquí. Esto no cambia el diseño
+de Bloque 3 (nuestro caso de uso es evaluar una oferta a la vez, no resolver un
+VRPTW por lotes, así que una interfaz par-a-par sigue siendo la correcta para
+nosotros), pero sí es una señal más para el checkpoint: el "contrato de
+distancias" del reparto de tareas ya se fragmentó en dos formas distintas antes
+de que Bloque 5 exista. Vale la pena que el equipo decida en el checkpoint si
+Bloque 5 va a exponer ambas formas (par-a-par para Bloque 3, matriz para Bloque 4)
+o si alguien construye un adaptador encima de una sola.
+
 ---
 
 ## 4. Heurística de inserción (`greedy.py`)
@@ -118,6 +161,23 @@ si se malinterpreta, el optimizador y el motor de decisión podrían pisarse la
 ruta activa en Fase 3.
 
 **Pregunta para el checkpoint:** confirmar con Persona C que `frozen_index = 1 if route else 0` es la misma noción de "tramo comprometido" que usa `ortools_optimizer.py`.
+
+**Actualización (revisión 2):** `core/optimization/ortools_optimizer.py` ya
+implementa esta misma idea con nombres explícitos —
+`EstadoRuta.active_leg_destination` (el tramo comprometido, equivalente a
+"`route[0]`") vs. `EstadoRuta.pending_stops` (lo reordenable) — lo cual
+**valida** la interpretación de `frozen_index = 1 if route else 0` propuesta
+aquí; no es una idea improvisada, coincide con lo que la otra persona asumió
+de forma independiente. El problema no es conceptual sino de contrato: ese
+`EstadoRuta` es un dataclass propio que **no existe** en `core/models.py` y no
+lo produce `CourierStateManager.snapshot()` (que devuelve `CourierState`, con
+`route: list[RouteStop]`, sin campos `driver_current_position` ni
+`active_leg_destination` separados). Es decir, el optimizador de Bloque 4 hoy
+solo corre contra sus propios mocks (`if __name__ == "__main__"` al final del
+archivo), no contra el estado real. Bloque 3 no necesita resolver esto — pero si
+Bloque 3 termina antes, este es el primer punto de integración roto que hay que
+señalar al equipo (alguien va a necesitar un adaptador `CourierState -> EstadoRuta`
+antes de la Fase 3).
 
 ---
 
@@ -174,6 +234,34 @@ stream de eventos (y la añade a algo que reciba Bloque 3), o se queda en Bloque
 leyendo el dataset por su cuenta? Mientras no se confirme, se avanza con el stub
 propio para no bloquear.
 
+**Actualización (revisión 2):** `core/simulation/engine.py` (Bloque 1) ya está
+implementado y confirma que la pregunta sigue abierta: genera ofertas eligiendo
+`pickup`/`dropoff` **uniformemente al azar** entre 4 zonas fijas, sin ninguna
+señal de demanda ni ponderación por zona todavía, y `data/kaggle_orders.csv`
+sigue sin existir en el repo (`data/README.md` lo marca como descarga manual
+pendiente). Es decir, hoy no hay ninguna señal de demanda histórica en ningún
+lado del código — el stub de Bloque 3 no es solo el default razonable, es
+**la única fuente de esa señal que existe ahora mismo**.
+
+Para no inventar zonas nuevas, `StaticDemandSignal` arranca con las mismas 4
+zonas que ya usa `engine.py` (mismas coordenadas, para que el mapa del
+dashboard y el log de explicabilidad hablen de los mismos lugares):
+
+```python
+_ZONES = {
+    "Tec": (25.651, -100.289),
+    "San Pedro": (25.657, -100.402),
+    "Centro": (25.680, -100.310),
+    "Apodaca": (25.780, -100.180),
+}
+```
+
+con un score inicial arbitrario por zona (ej. Centro/Tec más "calientes" que
+Apodaca), documentado como valor a calibrar en Fase 4, igual que
+`MIN_PAY_PER_KM`. Si Persona A reubica o cambia estas coordenadas después, el
+stub de Bloque 3 se actualiza en un solo lugar (`core/agent/demand.py`), sin
+tocar `decision.py`.
+
 ---
 
 ## 8. Explicabilidad / logging
@@ -196,16 +284,19 @@ autoexplicativo sin tener que leer el código.
 
 | # | Tarea | Depende de |
 |---|---|---|
-| 1 | Checkpoint de equipo: confirmar `DistanceProvider` (sección 3), `frozen_index` (sección 5) y dueño de demand signal (sección 7) | — |
+| 1 | Checkpoint de equipo: confirmar `DistanceProvider`/fragmentación con Bloque 4 (sección 3), `frozen_index` (sección 5) y dueño de demand signal (sección 7) | — |
 | 2 | `core/routing/distance_provider.py` (Protocol) + `core/routing/euclidean.py` (placeholder) | 1 |
-| 3 | `core/agent/demand.py` (Protocol + stub) | 1 |
+| 3 | `core/agent/demand.py` (Protocol + stub, con las 4 zonas de `engine.py`) | 1 |
 | 4 | Implementar `cheapest_insertion` en `greedy.py` usando el provider | 2 |
 | 5 | Implementar `DecisionEngine.evaluate` en `decision.py` (umbral + frozen horizon + demand + logging + `state_manager.accept_offer`) | 3, 4 |
 | 6 | Tests unitarios (sección 10) | 5 |
-| 7 | Integración Fase 3: swap a `RoadNetwork` real cuando Persona C lo tenga; conectar con `StabilityController.on_offer_accepted()` tras cada aceptación | Bloque 5 listo |
+| 7 | Smoke test de integración real: `SimulationEngine.event_stream()` (Bloque 1, ya implementado) → `DecisionEngine.evaluate` → `CourierStateManager` (Bloque 2, ya implementado), sin mocks, para validar el bloque contra el resto del sistema real que ya existe hoy | 5 |
+| 8 | Integración Fase 3: swap a `RoadNetwork` real cuando Persona C lo tenga; conectar con `StabilityController.on_offer_accepted()` tras cada aceptación; avisar al dueño de Bloque 4 del hallazgo de la sección 5 (adaptador `CourierState -> EstadoRuta` pendiente) | Bloque 5 listo |
 
-Los pasos 2–6 se pueden hacer en paralelo al resto del equipo sin esperar a nadie,
-que es justo el punto de tener el placeholder euclidiano.
+Los pasos 2–7 se pueden hacer en paralelo al resto del equipo sin esperar a
+nadie más — el paso 7 en particular ya no es hipotético: Bloque 1 y 2 están
+implementados de verdad hoy, así que ese smoke test es alcanzable ahora, no
+solo en la Fase 3 de integración del cronograma general.
 
 ---
 
@@ -228,6 +319,14 @@ pesados):
   - rechaza por falta de tiempo de turno.
   - acepta por excepción de costo marginal ~0 aunque el pago sea bajo.
   - usa un `DemandSignal` fake para verificar que el score mueve el umbral.
+- `tests/test_decision_integration.py` (nuevo, habilitado por el estado actual
+  del repo): instancia `SimulationEngine(seed=..., shift_duration=...)` y
+  `CourierStateManager` reales (sin mocks, igual que `test_engine.py` y
+  `test_state.py` ya hacen por separado), corre `DecisionEngine.evaluate` sobre
+  cada `Offer` del stream y verifica invariantes de extremo a extremo: el
+  `version` del estado nunca retrocede, `earnings` solo sube cuando el log dice
+  "Aceptado", y el turno completo corre sin excepciones sobre datos reales de
+  Bloque 1.
 
 ---
 
@@ -243,6 +342,18 @@ pesados):
    corridas reales en la Fase 4 del cronograma, no quedarse en el valor inicial.
 5. El "score de demanda ~0-1" debe tener la misma escala que espere quien
    consuma logs/dashboard (Persona D), si se llega a mostrar en el feed.
+6. **(Nuevo, confirmado en el repo)** `core/optimization/ortools_optimizer.py`
+   (Bloque 4) usa un modelo de datos propio (`Node`/`EstadoRuta`/`RutaOptimizada`)
+   que no es compatible con `core/models.py` ni con `CourierStateManager` reales
+   — hoy solo corre contra sus propios mocks. No es responsabilidad de Bloque 3
+   arreglarlo, pero si Bloque 3 llega primero a la Fase 3, hay que avisarlo en
+   el checkpoint antes de que alguien asuma que ya está integrado. (dueño: quien
+   escribió ese archivo, a confirmar quién es en el equipo)
+7. **(Nuevo)** `core/routing/ortools_optimizer.py` (la ubicación original de
+   Bloque 4 según `docs/01_Arquitectura.md` sección 7) sigue siendo un stub sin
+   tocar — hay dos rutas de código para "el optimizador" en el repo ahora mismo.
+   Vale la pena que el equipo decida cuál es la real antes de la Fase 3, para
+   que Bloque 3 sepa contra cuál probar la integración cuando llegue el momento.
 
 ---
 
@@ -254,8 +365,10 @@ pesados):
 - Funciona contra `EuclideanDistanceProvider` de forma aislada (sin depender de
   que Bloque 5 esté terminado) — cumple el requisito del reparto de tareas de
   "arrancar con distancias euclidianas de placeholder".
-- Tests de la sección 10 en verde (`pytest` desde `backend/`).
+- Tests de la sección 10 en verde (`pytest` desde `backend/`), incluyendo el
+  smoke test de integración real contra `SimulationEngine` + `CourierStateManager`.
 - Constantes de umbral documentadas (comentario corto con la justificación,
   no un valor mágico suelto).
-- Las 3 preguntas abiertas de la sección 11 resueltas o explícitamente
-  pospuestas con el equipo (no asumidas en silencio).
+- Las preguntas abiertas de la sección 11 resueltas o explícitamente
+  pospuestas con el equipo (no asumidas en silencio) — en particular las
+  nuevas #6 y #7, que son hallazgos de esta revisión y no estaban en la v1.
