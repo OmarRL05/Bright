@@ -282,16 +282,16 @@ autoexplicativo sin tener que leer el código.
 
 ## 9. Plan de implementación (orden sugerido)
 
-| # | Tarea | Depende de |
-|---|---|---|
-| 1 | Checkpoint de equipo: confirmar `DistanceProvider`/fragmentación con Bloque 4 (sección 3), `frozen_index` (sección 5) y dueño de demand signal (sección 7) | — |
-| 2 | `core/routing/distance_provider.py` (Protocol) + `core/routing/euclidean.py` (placeholder) | 1 |
-| 3 | `core/agent/demand.py` (Protocol + stub, con las 4 zonas de `engine.py`) | 1 |
-| 4 | Implementar `cheapest_insertion` en `greedy.py` usando el provider | 2 |
-| 5 | Implementar `DecisionEngine.evaluate` en `decision.py` (umbral + frozen horizon + demand + logging + `state_manager.accept_offer`) | 3, 4 |
-| 6 | Tests unitarios (sección 10) | 5 |
-| 7 | Smoke test de integración real: `SimulationEngine.event_stream()` (Bloque 1, ya implementado) → `DecisionEngine.evaluate` → `CourierStateManager` (Bloque 2, ya implementado), sin mocks, para validar el bloque contra el resto del sistema real que ya existe hoy | 5 |
-| 8 | Integración Fase 3: swap a `RoadNetwork` real cuando Persona C lo tenga; conectar con `StabilityController.on_offer_accepted()` tras cada aceptación; avisar al dueño de Bloque 4 del hallazgo de la sección 5 (adaptador `CourierState -> EstadoRuta` pendiente) | Bloque 5 listo |
+| # | Tarea | Depende de | Estado |
+|---|---|---|---|
+| 1 | Checkpoint de equipo: confirmar `DistanceProvider`/fragmentación con Bloque 4 (sección 3), `frozen_index` (sección 5) y dueño de demand signal (sección 7) | — | Pendiente (se avanzó igual con los defaults propuestos, sin bloquear) |
+| 2 | `core/routing/distance_provider.py` (Protocol) + `core/routing/euclidean.py` (placeholder) | 1 | **Hecho** — ver `docs/Bloque 3/doc-scripts/distance_provider.md` y `euclidean.md` |
+| 3 | `core/agent/demand.py` (Protocol + stub, con las 4 zonas de `engine.py`) | 1 | **Hecho** — ver `docs/Bloque 3/doc-scripts/demand.md` |
+| 4 | Implementar `cheapest_insertion` en `greedy.py` usando el provider | 2 | **Hecho** — ver `docs/Bloque 3/doc-scripts/greedy.md` |
+| 5 | Implementar `DecisionEngine.evaluate` en `decision.py` (umbral + frozen horizon + demand + logging + `state_manager.accept_offer`) | 3, 4 | **Hecho** — ver `docs/Bloque 3/doc-scripts/decision.md` |
+| 6 | Tests unitarios (sección 10) | 5 | **Hecho** — `test_euclidean.py`, `test_demand.py`, `test_greedy.py`, `test_decision.py` (24 tests en verde) |
+| 7 | Smoke test de integración real: `SimulationEngine.event_stream()` (Bloque 1, ya implementado) → `DecisionEngine.evaluate` → `CourierStateManager` (Bloque 2, ya implementado), sin mocks, para validar el bloque contra el resto del sistema real que ya existe hoy | 5 | **Hecho** — `test_decision_integration.py` |
+| 8 | Integración Fase 3: swap a `RoadNetwork` real cuando Persona C lo tenga; conectar con `StabilityController.on_offer_accepted()` tras cada aceptación; avisar al dueño de Bloque 4 del hallazgo de la sección 5 (adaptador `CourierState -> EstadoRuta` pendiente) | Bloque 5 listo | Pendiente (bloqueado por Bloque 5) |
 
 Los pasos 2–7 se pueden hacer en paralelo al resto del equipo sin esperar a
 nadie más — el paso 7 en particular ya no es hipotético: Bloque 1 y 2 están
