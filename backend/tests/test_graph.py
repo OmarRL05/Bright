@@ -20,7 +20,7 @@ def make_diamond_graph() -> nx.MultiDiGraph:
 
     Coordenadas ficticias solo para que `nearest_nodes` funcione; no
     corresponden a Monterrey real. `travel_time` en segundos y `length` en
-    metros, igual que los produce osmnx, para que `eta_min`/`distance_km`
+    metros, igual que los produce osmnx, para que `travel_time`/`travel_distance`
     se comporten igual que sobre el grafo real.
     """
     g = nx.MultiDiGraph()
@@ -51,12 +51,12 @@ def diamond_network() -> RoadNetwork:
 
 
 def test_eta_picks_the_faster_route_in_minutes(diamond_network):
-    eta = diamond_network.eta_min((0.000, 0.000), (0.010, 0.010))
+    eta = diamond_network.travel_time((0.000, 0.000), (0.010, 0.010))
     assert eta == pytest.approx(10.0)
 
 
 def test_distance_km_matches_the_faster_route(diamond_network):
-    km = diamond_network.distance_km((0.000, 0.000), (0.010, 0.010))
+    km = diamond_network.travel_distance((0.000, 0.000), (0.010, 0.010))
     assert km == pytest.approx(2.0)
 
 
@@ -64,9 +64,9 @@ def test_closure_on_committed_node_forces_reroute(diamond_network):
     diamond_network.apply_road_event(
         RoadEvent(type="closure", location=(0.010, 0.000), multiplier=None, timestamp=0.0)
     )
-    eta = diamond_network.eta_min((0.000, 0.000), (0.010, 0.010))
+    eta = diamond_network.travel_time((0.000, 0.000), (0.010, 0.010))
     assert eta == pytest.approx(40.0)
-    km = diamond_network.distance_km((0.000, 0.000), (0.010, 0.010))
+    km = diamond_network.travel_distance((0.000, 0.000), (0.010, 0.010))
     assert km == pytest.approx(8.0)
 
 
@@ -85,10 +85,10 @@ def test_traffic_multiplier_increases_eta_but_not_distance(diamond_network):
     # Un evento puntual en B afecta las 4 aristas incidentes a B (A->B, B->A,
     # B->D, D->B), asi que A->B->D pasa a costar (5*3) + (5*3) = 30 min,
     # todavia mas barato que A->C->D (40 min).
-    eta = diamond_network.eta_min((0.000, 0.000), (0.010, 0.010))
+    eta = diamond_network.travel_time((0.000, 0.000), (0.010, 0.010))
     assert eta == pytest.approx(30.0)
     # El trafico no cambia cuantos metros mide el camino.
-    km = diamond_network.distance_km((0.000, 0.000), (0.010, 0.010))
+    km = diamond_network.travel_distance((0.000, 0.000), (0.010, 0.010))
     assert km == pytest.approx(2.0)
 
 
@@ -100,7 +100,7 @@ def test_eta_is_infinite_when_every_route_is_closed(diamond_network):
         diamond_network.apply_road_event(
             RoadEvent(type="closure", location=location, multiplier=None, timestamp=0.0)
         )
-    eta = diamond_network.eta_min((0.000, 0.000), (0.010, 0.010))
+    eta = diamond_network.travel_time((0.000, 0.000), (0.010, 0.010))
     assert eta == float("inf")
 
 
@@ -120,8 +120,8 @@ class TestRealMonterreyGraph:
         macroplaza = (25.6714, -100.3097)
         tec_de_monterrey = (25.6514, -100.2895)
 
-        eta = network.eta_min(macroplaza, tec_de_monterrey)
-        km = network.distance_km(macroplaza, tec_de_monterrey)
+        eta = network.travel_time(macroplaza, tec_de_monterrey)
+        km = network.travel_distance(macroplaza, tec_de_monterrey)
 
         assert 0 < eta < 60  # menos de una hora, sanity check
         assert 0 < km < 30  # menos de 30 km, sanity check
@@ -129,12 +129,12 @@ class TestRealMonterreyGraph:
     def test_closure_near_origin_changes_or_maintains_eta(self, network):
         macroplaza = (25.6714, -100.3097)
         tec_de_monterrey = (25.6514, -100.2895)
-        baseline = network.eta_min(macroplaza, tec_de_monterrey)
+        baseline = network.travel_time(macroplaza, tec_de_monterrey)
 
         affected = network.apply_road_event(
             RoadEvent(type="closure", location=macroplaza, multiplier=None, timestamp=0.0)
         )
 
         assert len(affected) > 0
-        rerouted = network.eta_min(macroplaza, tec_de_monterrey)
+        rerouted = network.travel_time(macroplaza, tec_de_monterrey)
         assert rerouted >= baseline

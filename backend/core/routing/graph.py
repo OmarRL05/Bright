@@ -14,6 +14,11 @@ import osmnx as ox
 
 from core.models import RoadEvent
 
+# Nombres alineados a core.routing.distance_provider.DistanceProvider (ver
+# docs/Bloque 3/01_Plan.md seccion 3 y seccion 11 pregunta #1): RoadNetwork
+# debe satisfacer ese Protocol estructuralmente para que DecisionEngine
+# pueda intercambiarlo con EuclideanDistanceProvider sin adaptador.
+
 
 class RoadNetwork:
     def __init__(self, graphml_path: str | None = None, graph: nx.MultiDiGraph | None = None) -> None:
@@ -76,7 +81,7 @@ class RoadNetwork:
         lat, lon = coord
         return ox.distance.nearest_nodes(self.graph, X=lon, Y=lat)
 
-    def eta_min(self, origin: tuple[float, float], destination: tuple[float, float]) -> float:
+    def travel_time(self, origin: tuple[float, float], destination: tuple[float, float]) -> float:
         """Tiempo de viaje mas corto entre dos coordenadas, en minutos.
 
         Bajo demanda (no matriz precalculada): es lo que consulta Bloque 3
@@ -93,7 +98,7 @@ class RoadNetwork:
             seconds = nx.shortest_path_length(self.graph, o, d, weight=self._weight_fn("travel_time", apply_traffic=True))
             return seconds / 60.0
 
-    def distance_km(self, origin: tuple[float, float], destination: tuple[float, float]) -> float:
+    def travel_distance(self, origin: tuple[float, float], destination: tuple[float, float]) -> float:
         """Distancia mas corta entre dos coordenadas, en km.
 
         No se ve afectada por multiplicadores de trafico (el trafico cambia

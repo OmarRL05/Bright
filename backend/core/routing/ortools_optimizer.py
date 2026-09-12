@@ -194,7 +194,7 @@ class GlobalOptimizer:
             for j in range(n):
                 if i == j:
                     continue
-                eta = self.road_network.eta_min(locations[i], locations[j])
+                eta = self.road_network.travel_time(locations[i], locations[j])
                 if eta == float("inf"):
                     eta = LARGE_PENALTY / TIME_SCALE
                 matrix[i][j] = int(round(eta * TIME_SCALE))
@@ -203,14 +203,14 @@ class GlobalOptimizer:
     def _route_distance_km(self, locations: list[tuple[float, float]]) -> float:
         total = 0.0
         for a, b in zip(locations, locations[1:]):
-            leg = self.road_network.distance_km(a, b)
+            leg = self.road_network.travel_distance(a, b)
             total += leg if leg != float("inf") else LARGE_PENALTY
         return total
 
     def _route_time_min(self, locations: list[tuple[float, float]]) -> float:
         total = 0.0
         for a, b in zip(locations, locations[1:]):
-            leg = self.road_network.eta_min(a, b)
+            leg = self.road_network.travel_time(a, b)
             total += leg if leg != float("inf") else LARGE_PENALTY
         return total
 

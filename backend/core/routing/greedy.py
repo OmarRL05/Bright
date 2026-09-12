@@ -29,8 +29,8 @@ def cheapest_insertion(
     horizon, ver docs/01_Arquitectura.md seccion 6): no se debe insertar
     antes de ese indice salvo que el costo marginal sea ~0.
 
-    TODO(equipo): implementar usando core.routing.graph.RoadNetwork.eta_min /
-    .distance_km entre paradas (bajo demanda, no matriz precalculada -- esa
+    TODO(equipo): implementar usando core.routing.graph.RoadNetwork.travel_time /
+    .travel_distance entre paradas (bajo demanda, no matriz precalculada -- esa
     es solo para el optimizador global de Bloque 4).
     """
     raise NotImplementedError
