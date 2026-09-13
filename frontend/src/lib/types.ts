@@ -60,13 +60,15 @@ export interface AgentStatus {
   /**
    * Como mide distancias el sistema, en sus propias palabras. Corre a dos
    * velocidades a proposito: las DECISIONES usan haversine por un factor de
-   * rodeo (barato y sin dependencias) y el MAPA dibuja calle real cuando el
-   * grafo vial esta descargado. Se lee de aqui y no se escribe a mano para
-   * que el rotulo no envejezca el dia que eso cambie.
+   * rodeo (barato, sin red y sin reloj -- requisito del presupuesto de 50 ms)
+   * y el MAPA dibuja calle real desde la cache de OSRM. Se lee de aqui y no se
+   * escribe a mano para que el rotulo no envejezca el dia que eso cambie.
    */
   distance_model: string;
   road_detour_factor: number;
   route_geometry_available: boolean;
+  /** Cuántos de los 240 pares de zonas tienen geometría en disco. */
+  routes_cached?: number;
 }
 
 /** Una entrada de GET /replays. */
@@ -110,12 +112,16 @@ export interface ShockInfo {
   slip_min?: number;
 }
 
-export const SHOCK_COLORS: Record<ShockType, string> = {
-  surge: "#f59e0b", // amber-500 -- sube el pago
-  closure: "#f43f5e", // rose-500 -- bloquea tramo
-  delay: "#a1a1aa", // zinc-400 -- retraso puntual
-  rain: "#38bdf8", // sky-400 -- ralentiza, no bloquea
-};
+/*
+ * Los shocks NO tienen tabla de colores.
+ *
+ * La tenian (ambar/rosa/zinc/cyan) y tres de esos cuatro chocaban con una
+ * señal de la consola: ambar ya significa "lo paro la seguridad", rosa se
+ * confundia con "sin backend" y zinc con "no salieron las cuentas". Cuatro
+ * colores que hay que memorizar para distinguir lluvia de retraso valen menos
+ * que un solo tono ajeno a las señales (`--shock`) mas la etiqueta del tipo
+ * escrita al lado, que es lo que el mapa hace ahora.
+ */
 
 /**
  * Las constraints de seguridad, para pintarlas distinto del rechazo por paga.

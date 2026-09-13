@@ -53,6 +53,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
+from api.route import _cache as ROUTE_CACHE
 from api.schemas import (
     ActiveShocksResponse,
     DecideRequest,
@@ -74,7 +75,6 @@ from core.agent.journal import (
 from core.agent.safety import SafetyVerdict, combine, evaluate_safety_full, profile_for
 from core.agent.shocks import SHOCKS, ShockEffects, shock_from_payload
 from core.agent.strategy import STRATEGY
-from api.route import GRAPHML_PATH
 from core.routing.euclidean import ROAD_DETOUR_FACTOR
 
 router = APIRouter(tags=["decide"])
@@ -517,18 +517,25 @@ async def status() -> StatusResponse:
         # El sistema corre a dos velocidades y conviene que lo diga el, no un
         # comentario en el frontend: las DECISIONES miden con haversine por un
         # factor de rodeo (barato, siempre disponible, sin dependencias), y el
-        # MAPA dibuja la calle real cuando el grafo esta descargado. Un mapa
-        # bonito que falta no cuesta nada; una decision con la distancia
-        # equivocada, si.
+        # MAPA dibuja la calle real desde la cache de OSRM. Un mapa bonito que
+        # falta no cuesta nada; una decision con la distancia equivocada, si.
+        #
+        # El 1.35 no es un numero inventado: la razon calle/haversine medida
+        # sobre los 240 pares de zonas da mediana 1.293 y media 1.319
+        # (scripts/warm_routes.py la reimprime). Se deja arriba de la media a
+        # proposito -- subestimar la distancia subestima el tiempo de viaje, y
+        # de ahi salen los `shift_end_infeasible` que no se detectan a tiempo.
         distance_model=(
             f"decisiones: haversine entre centroides de zona x {ROAD_DETOUR_FACTOR} "
-            "(factor de rodeo). Mapa: geometria real de calles si hay grafo vial"
+            "(factor de rodeo, calibrado contra 240 rutas reales). "
+            "Mapa: geometria de calle real (OSRM)"
         ),
         road_detour_factor=ROAD_DETOUR_FACTOR,
-        # Derivado, no fijado a mano: es cierto en la maquina donde corre. Se
-        # mira el archivo y no se carga el grafo -- cargarlo aqui haria que el
-        # primer /status tardara segundos por una bandera booleana.
-        route_geometry_available=GRAPHML_PATH.exists(),
+        # Cuantos de los 240 pares posibles estan cacheados. Booleano no
+        # alcanzaba: con OSRM la respuesta ya no es "hay grafo o no", sino
+        # "cuanto del mapa se puede trazar sin red".
+        route_geometry_available=len(ROUTE_CACHE) > 0,
+        routes_cached=len(ROUTE_CACHE),
     )
 
 

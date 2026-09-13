@@ -103,11 +103,19 @@ class StatusResponse(BaseModel):
     decisions_recorded: int
     # Como se miden las distancias. Lo publica el sistema para que un mapa
     # pueda etiquetar su linea con la verdad en vez de con una cadena escrita
-    # a mano que envejece en silencio: hoy NO hay geometria de ruta, solo una
-    # estimacion entre centroides de zona.
+    # a mano que envejece en silencio.
+    #
+    # Corre a dos velocidades a proposito: las DECISIONES miden con haversine
+    # por un factor de rodeo (sin red, sin disco, sin reloj -- requisito del
+    # presupuesto de 50 ms y del replay), y el MAPA dibuja calle real desde la
+    # cache de OSRM. Las dos cifras conviven porque son para cosas distintas,
+    # y publicarlas juntas es lo que impide que una se haga pasar por la otra.
     distance_model: str
     road_detour_factor: float
     route_geometry_available: bool
+    #: Cuantos de los 240 pares de zonas tienen geometria en disco. Es la
+    #: respuesta a "¿el mapa va a funcionar con el wifi apagado?".
+    routes_cached: int = 0
 
 
 class ShockRequest(BaseModel):

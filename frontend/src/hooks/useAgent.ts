@@ -110,8 +110,24 @@ export function useShocks(pollMs = POLL_MS) {
  * distingue de "todavía no se pidió" (ausente del objeto) para que quien
  * dibuja pueda caer a línea recta sin reintentar en cada render.
  */
+/**
+ * Geometría de calle real por par de zonas, de GET /route.
+ *
+ * `null` significa "se preguntó y no hay" (503: ni caché ni OSRM), y el mapa
+ * lo rotula como línea recta. Es una distinción que vale la pena mantener en
+ * el tipo: la versión anterior de este mapa dibujaba una ruta sobre un grafo
+ * que no cubría 9 de las 16 zonas y no tenía forma de decir que la línea que
+ * enseñaba terminaba a kilómetros del destino.
+ */
+export interface RutaVial {
+  coords: [number, number][];
+  /** `cache` (disco, sirve sin red) u `osrm` (recién pedida). */
+  source: string;
+  distance_km: number;
+}
+
 export function useRoutes(pairs: string[]) {
-  const [routes, setRoutes] = useState<Record<string, [number, number][] | null>>({});
+  const [routes, setRoutes] = useState<Record<string, RutaVial | null>>({});
 
   // `routes` se lee adentro a propósito para no volver a pedir un par ya
   // resuelto; meterlo en las deps del efecto reintroduciría el loop que
@@ -125,9 +141,10 @@ export function useRoutes(pairs: string[]) {
       const [fromZone, toZone] = par.split("-");
       fetch(`${API_URL}/route?from_zone=${fromZone}&to_zone=${toZone}`, { cache: "no-store" })
         .then((res) => (res.ok ? res.json() : null))
-        .then((data: { coords: [number, number][] } | null) => {
+        .then((data: RutaVial | null) => {
           if (cancelado) return;
-          setRoutes((prev) => (par in prev ? prev : { ...prev, [par]: data?.coords ?? null }));
+          const ruta = data && data.coords?.length >= 2 ? data : null;
+          setRoutes((prev) => (par in prev ? prev : { ...prev, [par]: ruta }));
         })
         .catch(() => {
           if (!cancelado) setRoutes((prev) => (par in prev ? prev : { ...prev, [par]: null }));

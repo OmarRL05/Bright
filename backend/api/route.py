@@ -1,89 +1,109 @@
 """Ruta real sobre calles para el mapa del dashboard (Bloque 5/6).
 
-El mapa dibujaba una linea recta zona->zona porque nada conectaba el grafo
-vial real (Bloque 5, `core/routing/graph.py`) con el frontend -- el grafo
-ya existe y ya lo consume el motor VRPTW de coordenadas (Bloque 3/4), pero
-nadie lo exponia por HTTP para visualizacion.
+El mapa dibujaba una linea recta zona->zona. El primer intento de arreglarlo
+fue el grafo local de OSMnx, y resulto peor que la linea recta: trazaba con
+confianza rutas que terminaban a kilometros del destino, porque el grafo
+descargado cubre el municipio de Monterrey y 9 de las 16 zonas del simulador
+estan fuera de el. Ver `core/routing/osrm.py` para la medicion completa.
 
-No es parte del fast path: `/decide` nunca llama esto, asi que cargar el
-`.graphml` (~2s la primera vez, ver benchmark en el commit) no cuenta contra
-el presupuesto de 50ms de la ventana de decision.
+Ahora la geometria viene de OSRM, que cubre el area metropolitana entera, y
+la respuesta dice SIEMPRE de donde salio (`source`). Ese campo existe para
+que el mapa pueda rotular la diferencia en vez de dejar que se confunda una
+aproximacion con una medicion -- que es exactamente el fallo del intento
+anterior.
+
+No es parte del fast path: `/decide` nunca llama aqui, asi que ni la red ni
+la cache cuentan contra el presupuesto de 50 ms de la ventana de decision.
 """
 
 from __future__ import annotations
 
-from functools import lru_cache
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
 from core.models import DEFAULT_ZONE_MAP
+from core.routing.osrm import RouteCache, Ruta, fetch_route
 
 router = APIRouter(tags=["route"])
 
-#: No se commitea a git (pesa ~40MB, ver backend/data/README.md) -- en una
-#: maquina nueva puede no existir todavia. El endpoint lo dice con un 503
-#: legible en vez de tronar con un traceback de OSMnx.
-GRAPHML_PATH = Path(__file__).resolve().parents[1] / "data" / "monterrey.graphml"
+#: Este archivo SI se commitea (a diferencia del .graphml de 38 MB que este
+#: endpoint usaba antes): pesa ~350 KB con los 240 pares posibles y es lo que
+#: permite que el mapa trace calle real con la red apagada, que es el ensayo
+#: de la seccion 7 del protocolo. Se rellena con `scripts/warm_routes.py`.
+CACHE_PATH = Path(__file__).resolve().parents[1] / "data" / "route_cache.json"
+
+_cache = RouteCache(CACHE_PATH)
 
 
-@lru_cache(maxsize=1)
-def _network():
-    """Carga el grafo UNA sola vez por proceso. None si no se puede.
+def clave_de(zone_from: int, zone_to: int) -> str:
+    return f"{zone_from}-{zone_to}"
 
-    `RoadNetwork` se importa AQUI y no en la cabecera a proposito: arrastra
-    networkx y osmnx, que son opcionales. Con el import arriba, una maquina sin
-    esos paquetes no podia ni arrancar la aplicacion -- el mismo fallo que este
-    modulo ya previene para el `.graphml` ausente, pero una capa mas arriba y
-    mucho peor: en vez de degradar el mapa, tumbaba /decide y todo lo demas.
 
-    Devolver None cubre los dos casos con el mismo camino: sin paquetes o sin
-    grafo, el endpoint responde 503 y el frontend cae a linea recta.
+def ruta_entre_zonas(zone_from: int, zone_to: int, *, permitir_red: bool = True) -> tuple[Ruta | None, str]:
+    """Geometria entre dos zonas, y de donde salio.
+
+    El orden importa: cache primero, red despues. Una maquina calentada nunca
+    le pide nada a OSRM, que es lo que hace el mapa instantaneo en la demo y
+    lo que respeta la politica de uso del servidor publico.
+
+    Lo que se resuelve por red se guarda en memoria pero NO se escribe a
+    disco aqui: un endpoint HTTP escribiendo en un archivo del repo en cada
+    peticion es una carrera esperando a ocurrir. A disco lo baja el script de
+    calentado, que corre una vez y a proposito.
     """
-    if not GRAPHML_PATH.exists():
-        return None
-    try:
-        from core.routing.graph import RoadNetwork
-    except ImportError:
-        return None
-    return RoadNetwork(graphml_path=str(GRAPHML_PATH))
+    clave = clave_de(zone_from, zone_to)
+    cacheada = _cache.get(clave)
+    if cacheada is not None:
+        return cacheada, "cache"
 
+    if not permitir_red:
+        return None, "ninguna"
 
-@lru_cache(maxsize=256)
-def _cached_path(zone_from: int, zone_to: int) -> tuple[tuple[float, float], ...] | None:
-    """Cache por par de zonas: acotado (16 x 16 = 256 combinaciones como
-    maximo hoy) y valido mientras nadie dispare un cierre vial sobre este
-    grafo -- nada lo hace todavia, asi que cachear indefinido por proceso
-    es un trade-off razonable, no un descuido."""
-    network = _network()
-    if network is None:
-        return None
-    origin = DEFAULT_ZONE_MAP.by_id(zone_from).coord
-    destination = DEFAULT_ZONE_MAP.by_id(zone_to).coord
-    coords = network.shortest_path_coords(origin, destination)
-    return tuple(coords) if coords else None
+    origen = DEFAULT_ZONE_MAP.by_id(zone_from).coord
+    destino = DEFAULT_ZONE_MAP.by_id(zone_to).coord
+    viva = fetch_route([origen, destino])
+    if viva is None:
+        return None, "ninguna"
+
+    _cache.put(clave, viva)
+    return viva, "osrm"
 
 
 @router.get("/route")
 async def route(from_zone: int, to_zone: int) -> dict:
-    """Geometria real (lat/lon por nodo) del camino mas corto entre dos zonas.
+    """Geometria real (lat/lon) del camino por calles entre dos zonas.
 
-    El frontend cae a una linea recta si esto responde 404/503 -- ver
-    src/components/Map.tsx -- asi que un juez sin `monterrey.graphml`
-    descargado sigue viendo un mapa funcional, solo menos preciso.
+    `source` dice de donde salio: `cache` (disco, funciona sin red) u `osrm`
+    (recien pedido). Si no hay ninguna de las dos responde 503 y el frontend
+    dibuja linea recta ROTULADA como tal -- ver src/components/Map.tsx. Un
+    juez sin internet sigue viendo un mapa que no miente.
     """
-    if _network() is None:
+    if (
+        DEFAULT_ZONE_MAP.by_id_or_none(from_zone) is None
+        or DEFAULT_ZONE_MAP.by_id_or_none(to_zone) is None
+    ):
+        raise HTTPException(status_code=404, detail="zona desconocida")
+
+    if from_zone == to_zone:
+        # Mismo origen y destino: no hay nada que trazar, y OSRM devolveria
+        # una ruta de longitud cero que el mapa dibujaria como un punto.
+        raise HTTPException(status_code=404, detail="origen y destino son la misma zona")
+
+    ruta, fuente = ruta_entre_zonas(from_zone, to_zone)
+    if ruta is None:
         raise HTTPException(
             status_code=503,
             detail=(
-                "grafo vial no disponible: falta backend/data/monterrey.graphml "
-                "(no se commitea a git, ver backend/data/README.md para generarlo)."
+                "sin geometria vial: el par no esta en data/route_cache.json y "
+                "OSRM no respondio (¿sin red?). Correr scripts/warm_routes.py "
+                "con internet para dejar la cache lista."
             ),
         )
-    if DEFAULT_ZONE_MAP.by_id_or_none(from_zone) is None or DEFAULT_ZONE_MAP.by_id_or_none(to_zone) is None:
-        raise HTTPException(status_code=404, detail="zona desconocida")
 
-    coords = _cached_path(from_zone, to_zone)
-    if coords is None:
-        raise HTTPException(status_code=404, detail="sin camino entre esas zonas (todo bloqueado)")
-    return {"from_zone": from_zone, "to_zone": to_zone, "coords": [list(c) for c in coords]}
+    return {
+        "from_zone": from_zone,
+        "to_zone": to_zone,
+        "source": fuente,
+        **ruta.to_dict(),
+    }

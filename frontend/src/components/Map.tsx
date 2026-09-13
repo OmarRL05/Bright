@@ -2,16 +2,11 @@
 
 import "leaflet/dist/leaflet.css";
 
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { CircleMarker, MapContainer, Polyline, TileLayer, Tooltip, useMap } from "react-leaflet";
 import { useRoutes, useShocks } from "@/hooks/useAgent";
 import { useZones } from "@/hooks/useZones";
-import {
-  isSafetyConstraint,
-  SHOCK_COLORS,
-  type DecisionEvent,
-  type Zone,
-} from "@/lib/types";
+import { isSafetyConstraint, type DecisionEvent, type Zone } from "@/lib/types";
 
 interface MapProps {
   /** De la más nueva a la más vieja, igual que GET /decisions (mismo dato que el feed). */
@@ -21,6 +16,9 @@ interface MapProps {
 }
 
 const MONTERREY_CENTER: [number, number] = [25.68, -100.31];
+
+/** Con más halos que esto a la vez, las etiquetas fijas estorban más que informan. */
+const MAX_SHOCKS_ROTULADOS = 4;
 
 // Esri "Dark Gray Canvas", gratis y sin llave -- server.arcgisonline.com es
 // el servicio REST clasico de Esri, de acceso anonimo para este nivel de
@@ -41,20 +39,87 @@ const LABELS_TILE_URL =
 const TILE_ATTRIBUTION =
   'Tiles &copy; <a href="https://www.esri.com">Esri</a> — Esri, HERE, Garmin, © OpenStreetMap contributors';
 
-/** Color de una zona por demanda: frío (poca) a cálido (mucha) — mismo dato que usa la economía en /decide. */
-function demandColor(score: number): string {
-  const hue = 210 - 210 * Math.min(1, Math.max(0, score)); // 210=azul frío, 0=rojo cálido
-  return `hsl(${hue}, 75%, 55%)`;
+/**
+ * Las señales de la consola, leídas de los tokens CSS.
+ *
+ * Leaflet pinta con atributos SVG (`stroke="..."`), y un atributo no resuelve
+ * `var(--go)`: necesita el hex literal. Copiarlos aquí a mano es justo cómo
+ * este mapa acabó pintado con la paleta de Tailwind (emerald/rose/gray)
+ * mientras el resto de la pantalla usaba otra — y con una leyenda que, por
+ * tanto, describía colores que el libro de decisiones no usaba. Así que se
+ * leen de `:root` en tiempo de ejecución: una sola fuente, en el sitio donde
+ * viven los tokens.
+ *
+ * Los valores de respaldo son sólo para que nada quede invisible si el CSS aún
+ * no aplicó; el componente se monta con `ssr: false`, así que en la práctica
+ * siempre hay hoja de estilos.
+ */
+const RESPALDO = {
+  ink: "#0e1418",
+  go: "#55be8e",
+  safety: "#e8a93c",
+  pay: "#8fa9ba",
+  muted: "#8da0ac",
+  line: "#22303a",
+  text: "#dce6eb",
+  shock: "#4fc3e8",
+  alert: "#e77268",
+} as const;
+
+type Senales = typeof RESPALDO;
+
+function leerSenales(): Senales {
+  if (typeof window === "undefined") return RESPALDO;
+  const raiz = getComputedStyle(document.documentElement);
+  const salida = { ...RESPALDO } as Record<keyof Senales, string>;
+  for (const nombre of Object.keys(RESPALDO) as (keyof Senales)[]) {
+    salida[nombre] = raiz.getPropertyValue(`--${nombre}`).trim() || RESPALDO[nombre];
+  }
+  return salida as Senales;
 }
 
-/** Ajusta el encuadre una vez que las 16 zonas llegan, sin pelearse con el zoom del usuario después. */
+/**
+ * Encuadra las 16 zonas, y vuelve a hacerlo cuando el panel cambia de tamaño.
+ *
+ * Antes sólo encuadraba al llegar las zonas. El mapa ahora crece con la
+ * ventana, así que ese único cálculo salía con el tamaño equivocado y en
+ * pantallas bajas arrancaba con zonas fuera de vista. No se pelea con el zoom
+ * del usuario: sólo reacciona a que cambie el contenedor, no al scroll ni al
+ * arrastre.
+ */
 function FitToZones({ zones }: { zones: Zone[] }) {
   const leafletMap = useMap();
+  // El observador de tamaño se suscribe una vez y vive mas que cualquier
+  // render, asi que lee las zonas de un ref en vez de capturarlas. Este efecto
+  // va PRIMERO: los efectos corren en orden de declaracion, de modo que el de
+  // abajo ya encuentra el ref al dia.
+  const ultimas = useRef<Zone[]>(zones);
   useEffect(() => {
-    if (zones.length === 0) return;
-    const bounds: [number, number][] = zones.map((z) => z.coord);
-    leafletMap.fitBounds(bounds, { padding: [24, 24] });
-  }, [zones, leafletMap]);
+    ultimas.current = zones;
+  }, [zones]);
+
+  const encuadrar = useCallback(() => {
+    const actuales = ultimas.current;
+    if (actuales.length === 0) return;
+    leafletMap.fitBounds(
+      actuales.map((z) => z.coord),
+      { padding: [24, 24] },
+    );
+  }, [leafletMap]);
+
+  useEffect(() => {
+    encuadrar();
+  }, [zones, encuadrar]);
+
+  useEffect(() => {
+    const observador = new ResizeObserver(() => {
+      leafletMap.invalidateSize();
+      encuadrar();
+    });
+    observador.observe(leafletMap.getContainer());
+    return () => observador.disconnect();
+  }, [leafletMap, encuadrar]);
+
   return null;
 }
 
@@ -65,10 +130,19 @@ function FitToZones({ zones }: { zones: Zone[] }) {
  * en vivo: ese evento existe en el contrato oficial pero nada lo produce
  * todavía (ver docs/03_Integracion_API_Decide.md) -- la aproximación
  * honesta es "la última entrega aceptada", no una posición GPS.
+ *
+ * **El color aquí significa exactamente lo mismo que en el resto de la
+ * consola**: verde entró, ámbar lo paró la seguridad, pizarra no salieron las
+ * cuentas. Por eso las zonas se quedaron sin color propio — llevaban una rampa
+ * azul→rojo que metía un eje cromático de más y cuyo extremo rojo chocaba con
+ * "sin backend". La demanda es contexto, no veredicto, así que se codifica con
+ * tamaño y opacidad y deja el color entero para las decisiones.
  */
 export function Map({ decisions, live }: MapProps) {
   const { zones, error: zonesError } = useZones();
   const shocks = useShocks();
+  // Se monta con ssr:false, asi que aqui ya hay hoja de estilos aplicada.
+  const senales = useMemo(() => leerSenales(), []);
 
   // Objeto y no `new Map()` a proposito: el nombre `Map` ya lo ocupa este
   // mismo componente (ver el mismo comentario en app/page.tsx), y la
@@ -104,25 +178,30 @@ export function Map({ decisions, live }: MapProps) {
 
   const ultimaEntrega = aceptadas.length > 0 ? aceptadas[aceptadas.length - 1] : null;
   const posicionActual = ultimaEntrega ? zoneById[ultimaEntrega.zone_dropoff!] : null;
+  const ultimaRecoleccion = ultimaEntrega ? zoneById[ultimaEntrega.zone_pickup!] : null;
 
-  // Geometria real sobre calles (Bloque 5, grafo de Monterrey) para cada
-  // par zona->zona que aparece en la ruta. Si el .graphml no esta
-  // descargado o el par no tiene camino, el hook devuelve null y se cae a
-  // la linea recta de siempre -- ver el fallback abajo, en el render.
+  // Geometría de calle real (OSRM, servida desde la caché en disco) para cada
+  // par zona->zona de la ruta. Si el par no está cacheado y además no hay red,
+  // el hook devuelve null y se cae a la línea recta -- rotulada como tal en el
+  // tooltip, ver el fallback abajo en el render.
   const paresDeRuta = useMemo(
     () => [...new Set(aceptadas.map((d) => `${d.zone_pickup}-${d.zone_dropoff}`))],
     [aceptadas],
   );
   const rutasReales = useRoutes(paresDeRuta);
 
+  const shocksEnZona = live ? shocks.filter((s) => s.zone !== undefined && zoneById[s.zone]) : [];
+  const rotularShocks = shocksEnZona.length <= MAX_SHOCKS_ROTULADOS;
+
   return (
-    <div className="relative h-full min-h-96 w-full overflow-hidden rounded-lg border border-gray-200 dark:border-gray-800">
+    // Sin borde ni radio propios: el contenedor de page.tsx ya pone el filete,
+    // y los dos juntos daban una caja redondeada dentro de otra cuadrada.
+    <div className="relative h-full w-full overflow-hidden">
       <MapContainer
         center={MONTERREY_CENTER}
         zoom={11}
         scrollWheelZoom
         className="h-full w-full"
-        style={{ background: "#0a0a0a" }}
       >
         <TileLayer url={BASE_TILE_URL} attribution={TILE_ATTRIBUTION} />
         <TileLayer url={LABELS_TILE_URL} />
@@ -132,23 +211,25 @@ export function Map({ decisions, live }: MapProps) {
           <CircleMarker
             key={zone.zone_id}
             center={zone.coord}
-            radius={5 + zone.demand_score * 9}
+            // Tamaño y opacidad llevan la demanda; el tono no cambia nunca.
+            radius={4 + zone.demand_score * 10}
             pathOptions={{
-              color: zone.flagged ? "#f43f5e" : demandColor(zone.demand_score),
-              weight: zone.flagged ? 2 : 1,
-              fillColor: demandColor(zone.demand_score),
-              fillOpacity: 0.45,
+              color: zone.flagged ? senales.safety : senales.line,
+              weight: zone.flagged ? 1.5 : 1,
+              fillColor: senales.muted,
+              fillOpacity: 0.1 + zone.demand_score * 0.28,
               dashArray: zone.flagged ? "3 2" : undefined,
             }}
           >
             <Tooltip direction="top" offset={[0, -4]}>
               <span className="font-medium">{zone.name}</span>
               <br />
-              zone_id {zone.zone_id} · demanda {zone.demand_score.toFixed(2)}
+              <span className="font-mono">zone_id {zone.zone_id}</span> · demanda{" "}
+              {zone.demand_score.toFixed(2)}
               {zone.flagged && (
                 <>
                   <br />
-                  <span className="text-rose-500">zona marcada (toque de queda 22:00)</span>
+                  <span className="text-safety">zona marcada · toque de queda 22:00</span>
                 </>
               )}
             </Tooltip>
@@ -164,18 +245,30 @@ export function Map({ decisions, live }: MapProps) {
           return (
             <Polyline
               key={`${decision.order_id}-ruta`}
-              // Linea recta mientras se resuelve o si no hay grafo vial
-              // disponible (real === null) -- ver useRoutes.
-              positions={real && real.length > 0 ? real : [pickup.coord, dropoff.coord]}
+              // Línea recta mientras se resuelve, o si el par no está en la
+              // caché y tampoco hay red (real === null) -- ver useRoutes.
+              positions={real ? real.coords : [pickup.coord, dropoff.coord]}
               pathOptions={{
-                color: "#10b981",
+                color: senales.go,
                 weight: esLaUltima ? 3 : 1.5,
                 opacity: esLaUltima ? 0.95 : 0.35,
               }}
             >
               <Tooltip sticky>
-                {decision.order_id}: {pickup.name} → {dropoff.name}
-                {!real && <><br /><span className="text-gray-400">línea recta — sin grafo vial</span></>}
+                <span className="font-mono">{decision.order_id}</span>
+                <br />
+                {pickup.name} → {dropoff.name}
+                <br />
+                {/* La línea dice siempre qué es. Un trazo que sigue calles y
+                    un trazo que las ignora se parecen demasiado como para
+                    dejar que el juez adivine cuál está viendo. */}
+                {real ? (
+                  <span className="text-muted">
+                    calle real · {real.distance_km.toFixed(1)} km
+                  </span>
+                ) : (
+                  <span className="text-muted">línea recta — sin geometría vial</span>
+                )}
               </Tooltip>
             </Polyline>
           );
@@ -190,53 +283,90 @@ export function Map({ decisions, live }: MapProps) {
               center={pickup.coord}
               radius={4}
               pathOptions={{
-                color: safety ? "#f59e0b" : "#9ca3af",
+                color: safety ? senales.safety : senales.pay,
                 weight: 1.5,
                 fillOpacity: 0,
                 dashArray: "2 2",
               }}
             >
               <Tooltip sticky>
-                SKIP {decision.order_id} · {decision.binding_constraint ?? "paga insuficiente"}
+                <span className={safety ? "text-safety" : "text-pay"}>
+                  {safety ? "Seguridad" : "Economía"}
+                </span>{" "}
+                · <span className="font-mono">{decision.order_id}</span>
+                <br />
+                <span className="font-mono">
+                  {decision.binding_constraint ?? "reservation_wage"}
+                </span>
               </Tooltip>
             </CircleMarker>
           );
         })}
 
-        {live &&
-          shocks.map((shock, i) => {
-            const zone = shock.zone !== undefined ? zoneById[shock.zone] : undefined;
-            if (!zone) return null;
-            return (
-              <CircleMarker
-                key={`shock-${i}-${shock.sim_time}`}
-                center={zone.coord}
-                radius={18}
-                pathOptions={{
-                  color: SHOCK_COLORS[shock.shock_type],
-                  weight: 2,
-                  fillColor: SHOCK_COLORS[shock.shock_type],
-                  fillOpacity: 0.15,
-                }}
+        {shocksEnZona.map((shock, i) => {
+          const zone = zoneById[shock.zone!];
+          return (
+            <CircleMarker
+              key={`shock-${i}-${shock.sim_time}`}
+              center={zone.coord}
+              radius={18}
+              pathOptions={{
+                color: senales.shock,
+                weight: 2,
+                fillColor: senales.shock,
+                fillOpacity: 0.12,
+              }}
+            >
+              {/* El tipo va escrito, no codificado en el color: un juez inyecta
+                  un shock en vivo y tiene que verlo sin consultar leyenda. */}
+              <Tooltip
+                permanent={rotularShocks}
+                direction="top"
+                offset={[0, -18]}
+                className={rotularShocks ? "!border-shock" : undefined}
               >
-                <Tooltip direction="top">
-                  {shock.shock_type}
-                  {shock.multiplier ? ` ${shock.multiplier.toFixed(1)}x` : ""} · {zone.name}
-                </Tooltip>
-              </CircleMarker>
-            );
-          })}
+                <span className="text-shock">{shock.shock_type}</span>
+                {shock.multiplier ? ` ${shock.multiplier.toFixed(1)}×` : ""} · {zone.name}
+              </Tooltip>
+            </CircleMarker>
+          );
+        })}
+
+        {/* El viaje activo se lee entero: de dónde salió, por qué calles y
+            dónde terminó. Antes sólo estaba marcado el final, así que la
+            línea gruesa no tenía principio y había que deducirlo del trazo.
+            Sólo el último — treinta pares de marcadores sobre un turno
+            completo tapan el mapa que intentan explicar. */}
+        {ultimaRecoleccion && (
+          <CircleMarker
+            center={ultimaRecoleccion.coord}
+            radius={6}
+            pathOptions={{
+              color: senales.go,
+              weight: 2,
+              fillColor: senales.ink,
+              fillOpacity: 1,
+            }}
+          >
+            <Tooltip direction="left" offset={[-8, 0]}>
+              <span className="text-go">recolección · {ultimaRecoleccion.name}</span>
+            </Tooltip>
+          </CircleMarker>
+        )}
 
         {posicionActual && (
           <CircleMarker
             center={posicionActual.coord}
             radius={7}
-            pathOptions={{ color: "#ffffff", weight: 2, fillColor: "#10b981", fillOpacity: 1 }}
+            pathOptions={{
+              color: senales.text,
+              weight: 2,
+              fillColor: senales.go,
+              fillOpacity: 1,
+            }}
           >
-            <Tooltip permanent direction="right" offset={[8, 0]} className="!bg-transparent !border-0 !shadow-none">
-              <span className="text-xs font-medium text-emerald-400">
-                última entrega · {posicionActual.name}
-              </span>
+            <Tooltip permanent direction="right" offset={[8, 0]}>
+              <span className="text-go">última entrega · {posicionActual.name}</span>
             </Tooltip>
           </CircleMarker>
         )}
@@ -245,7 +375,7 @@ export function Map({ decisions, live }: MapProps) {
       <MapLegend />
 
       {zonesError && (
-        <div className="absolute inset-x-0 top-0 bg-rose-950/90 px-3 py-1.5 text-center text-xs text-rose-200">
+        <div className="sobre-mapa absolute inset-x-0 top-0 border-b border-alert bg-ink/90 px-3 py-1.5 text-center text-xs text-alert">
           No se pudieron cargar las zonas: {zonesError}
         </div>
       )}
@@ -253,20 +383,46 @@ export function Map({ decisions, live }: MapProps) {
   );
 }
 
+/**
+ * Leyenda de lo que SÓLO existe en el mapa.
+ *
+ * No repite el código de color de la consola (verde / ámbar / pizarra): eso ya
+ * lo enseña la banda de arriba con sus cuentas, y repetirlo aquí sería pedir
+ * que se aprenda dos veces. Quedan las tres codificaciones que son propias del
+ * mapa y no aparecen en ninguna otra parte.
+ *
+ * Antes esto no se veía en absoluto: iba sin `z-index` y los paneles de
+ * Leaflet (hasta 700) la tapaban entera. `.sobre-mapa` la pone encima.
+ */
 function MapLegend() {
   return (
-    <div className="pointer-events-none absolute bottom-2 left-2 rounded-md bg-black/70 px-3 py-2 text-[11px] leading-relaxed text-gray-200 backdrop-blur-sm">
-      <div className="flex items-center gap-1.5">
-        <span className="inline-block h-2 w-4 rounded-sm bg-emerald-500" /> ruta aceptada
+    <div className="sobre-mapa pointer-events-none absolute bottom-2 left-2 border border-line bg-ink/85 px-2.5 py-1.5 text-[11px] leading-relaxed text-muted backdrop-blur-sm">
+      <div className="flex items-center gap-2">
+        <span className="inline-flex w-4 items-center justify-center gap-0.5">
+          <span className="h-1.5 w-1.5 rounded-full bg-muted/25" />
+          <span className="h-2.5 w-2.5 rounded-full bg-muted/50" />
+        </span>
+        círculo más grande, más demanda
       </div>
-      <div className="flex items-center gap-1.5">
-        <span className="inline-block h-2 w-2 rounded-full border border-amber-500" /> rechazo de seguridad
+      <div className="flex items-center gap-2">
+        <span className="inline-flex w-4 items-center justify-center">
+          <span className="h-2.5 w-2.5 rounded-full border border-dashed border-safety" />
+        </span>
+        zona marcada de noche
       </div>
-      <div className="flex items-center gap-1.5">
-        <span className="inline-block h-2 w-2 rounded-full border border-gray-400" /> rechazo por paga
+      <div className="flex items-center gap-2">
+        <span className="inline-flex w-4 items-center justify-center">
+          <span className="h-3 w-3 rounded-full border border-shock bg-shock/15" />
+        </span>
+        shock activo
       </div>
-      <div className="flex items-center gap-1.5">
-        <span className="inline-block h-2 w-2 rounded-full border border-dashed border-rose-500" /> zona marcada
+      <div className="flex items-center gap-2">
+        <span className="inline-flex w-4 items-center justify-center gap-0.5">
+          <span className="h-2 w-2 rounded-full border border-go bg-ink" />
+          <span className="h-px w-1.5 bg-go" />
+          <span className="h-2 w-2 rounded-full bg-go" />
+        </span>
+        recolección → entrega
       </div>
     </div>
   );
