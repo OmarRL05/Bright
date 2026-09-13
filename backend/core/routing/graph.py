@@ -16,7 +16,7 @@ from core.models import RoadEvent
 
 # Nombres alineados a core.routing.distance_provider.DistanceProvider (ver
 # docs/Bloque 3/01_Plan.md seccion 3 y seccion 11 pregunta #1): RoadNetwork
-# debe satisfacer ese Protocol estructuralmente para que DecisionEngine
+# debe satisfacer ese Protocol estructuralmente para que sus consumidores
 # pueda intercambiarlo con EuclideanDistanceProvider sin adaptador.
 
 

@@ -12,10 +12,19 @@ código línea por línea y explicación de sus tests.
 | Doc | Código que documenta |
 |---|---|
 | [`distance_provider.md`](./distance_provider.md) | `backend/core/routing/distance_provider.py` |
-| [`euclidean.md`](./euclidean.md) | `backend/core/routing/euclidean.py` + `backend/tests/test_euclidean.py` |
-| [`demand.md`](./demand.md) | `backend/core/agent/demand.py` + `backend/tests/test_demand.py` |
-| [`greedy.md`](./greedy.md) | `backend/core/routing/greedy.py` + `backend/tests/test_greedy.py` |
-| [`decision.md`](./decision.md) | `backend/core/agent/decision.py` + `backend/tests/test_decision.py` + `backend/tests/test_decision_integration.py` |
+| [`euclidean.md`](./euclidean.md) | `backend/core/routing/euclidean.py` |
+| [`greedy.md`](./greedy.md) | `backend/core/routing/greedy.py` |
+
+> **Aviso de vigencia.** Estos tres documentan el motor VRPTW de coordenadas,
+> que **ya no es el camino de decisión del sistema**. El camino que los jueces
+> prueban es `api/decide.py` → `core/agent/safety.py` + `core/agent/economics.py`,
+> sobre zonas enteras y tiempo absoluto. `euclidean.py` sigue vivo (alimenta la
+> matriz de distancias entre zonas); `greedy.py` ya no tiene consumidor.
+>
+> Los docs de `decision.py` y `demand.py` se borraron con su código: describían
+> archivos que ya no existen, y un documento así confunde más de lo que ayuda.
+> La documentación del camino vigente está en `RESULTADOS.md`, `ENSAYO_DEMO.md`
+> y los docstrings de los módulos de `core/agent/`.
 
 ## Cómo encajan estos módulos
 

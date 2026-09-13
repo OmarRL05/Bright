@@ -3,7 +3,7 @@
 Es la segunda mitad del fast path. La primera es `core.agent.safety`, y el
 orden entre las dos no es negociable: la seguridad decide antes y, si bloquea,
 esta capa no se consulta (ver `safety.combine`). Analogo a `MIN_PAY_PER_KM` en
-`core.agent.decision` (el motor VRPTW de coordenadas), pero en MXN/hr y sobre
+el motor VRPTW de coordenadas que hubo antes, pero en MXN/hr y sobre
 el contrato oficial de zonas + vehiculo.
 
 Tres cosas que esta capa hace y que conviene poder defender

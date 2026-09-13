@@ -39,7 +39,7 @@ Consecuencias concretas de ese fix:
   produccion los llamaba. `log_offer_decision` ahora emite el evento
   `decision` unico (ACCEPT/SKIP), no dos eventos separados.
 - `position_update`, `earnings_update` y `strategy_update` siguen sin
-  productor: le corresponden a CourierStateManager/DecisionEngine (P0.1/
+  productor en ESTE modulo: los emite quien corre el turno (P0.1/
   Bloque 3), no a este generador de stream. No se inventaron aqui.
 
 Corregido tras revision de Persona 1 (13 sep): un `shock` de tipo `surge` no
@@ -470,7 +470,7 @@ class SimulationEngine:
         reason: str,
         latency_ms: float = 0.0,
     ) -> None:
-        """Llamado por Bloque 3 (DecisionEngine) después de evaluar una oferta.
+        """Llamado tras evaluar una oferta (hoy, por el arnes de evaluacion).
 
         Emite el evento oficial `decision` (ACCEPT/SKIP) -- antes eran dos
         eventos internos (offer_accepted/offer_rejected) sin equivalente en

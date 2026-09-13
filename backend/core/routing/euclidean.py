@@ -8,7 +8,7 @@ Persona C termina el grafo real"). Ver docs/Bloque 3/01_Plan.md seccion 3.
 
 Cuando graph.py este listo, se reemplaza la instancia de
 EuclideanDistanceProvider por RoadNetwork en el punto donde se arme
-DecisionEngine (main.py) -- decision.py y greedy.py no cambian, porque solo
+quien lo consuma -- greedy.py no cambia, porque solo
 conocen el Protocol.
 """
 
