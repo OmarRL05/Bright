@@ -118,6 +118,12 @@ class SimulationEngine:
         self.current_time = 0.0
         self.offer_counter = 0
 
+        # Campos extra del evento `shift_end`. Quien corre el turno los va
+        # llenando (ganancias, entregas, violaciones); el generador no los
+        # conoce. Como `event_stream` es perezoso y `shift_end` se escribe al
+        # final, el dict ya esta completo cuando se serializa.
+        self.shift_end_stats: dict = {}
+
         # Mantener la lista de coordenadas para que los tests de retrocompatibilidad
         # que accedan a _zones sigan funcionando.
         self._zones = self.zone_map.coords
@@ -130,12 +136,41 @@ class SimulationEngine:
     # Generadores de eventos individuales
     # ------------------------------------------------------------------
 
+    # Proporcion de pedidos "voluminosos" (muebles chicos, despensa grande,
+    # pedidos corporativos). Existen porque sin ellos la constraint
+    # `vehicle_capacity` no se dispara nunca en un turno y los tres perfiles de
+    # vehiculo se vuelven indistinguibles en los resultados.
+    BULKY_ORDER_RATE = 0.12
+
+    # Proporcion de ofertas que llegan con surge activo.
+    SURGE_ORDER_RATE = 0.25
+
+    # Proporcion de pedidos sin propina.
+    NO_TIP_RATE = 0.35
+
+    # Litros por kilogramo: comida y despensa son voluminosas para su peso.
+    LITERS_PER_KG = (2.5, 5.0)
+
     def _generate_offer(self) -> Offer:
-        """Genera una oferta nueva reproducible."""
+        """Genera una oferta nueva reproducible.
+
+        Emite las dos vistas de la misma oferta (coordenadas para el motor
+        VRPTW, zonas enteras + peso/volumen/propina/surge para el contrato
+        oficial). El orden de las extracciones del RNG es parte del contrato de
+        determinismo: cambiarlo cambia el stream de una seed dada, asi que si
+        se agrega un campo nuevo, va al final.
+        """
         self.offer_counter += 1
 
-        pickup_zone = self._rng.choice(self.zone_map.zones)
-        dropoff_zone = self._rng.choice(self.zone_map.zones)
+        # Las ofertas NO se reparten uniformemente entre zonas: nacen donde hay
+        # demanda. Sin esto, `demand_score` es un numero que el ZoneMap declara
+        # y que nada usa, y "terminar en una zona caliente" no puede valer nada
+        # porque el siguiente pedido sale igual de probable en cualquier lado.
+        # Es lo que hace medible la categoria de sondeo "Dropoff location
+        # value" del protocolo.
+        pesos = [z.demand_score for z in self.zone_map.zones]
+        pickup_zone = self._rng.choices(self.zone_map.zones, weights=pesos, k=1)[0]
+        dropoff_zone = self._rng.choices(self.zone_map.zones, weights=pesos, k=1)[0]
 
         pay = float(self._rng.randint(40, 150))
 
@@ -144,6 +179,29 @@ class SimulationEngine:
 
         # demand_percentile viene del score de la zona del pickup (P0.2)
         demand_percentile = pickup_zone.demand_score
+
+        # --- campos del contrato oficial -----------------------------------
+        if self._rng.random() < self.BULKY_ORDER_RATE:
+            weight_kg = round(self._rng.uniform(6.0, 25.0), 1)
+        else:
+            weight_kg = round(self._rng.uniform(0.3, 6.0), 1)
+
+        volume_liters = round(weight_kg * self._rng.uniform(*self.LITERS_PER_KG), 1)
+
+        if self._rng.random() < self.SURGE_ORDER_RATE:
+            surge_multiplier = round(self._rng.uniform(1.1, 2.2), 1)
+        else:
+            surge_multiplier = 1.0
+
+        # La propina escala con la tarifa, no con el surge: es lo que deja el
+        # cliente, no lo que pone la plataforma (ver core/agent/economics.py).
+        if self._rng.random() < self.NO_TIP_RATE:
+            est_tip_mxn = 0.0
+        else:
+            est_tip_mxn = round(pay * self._rng.uniform(0.05, 0.25), 1)
+
+        restaurant_prep_min = float(self._rng.randint(3, 20))
+        platform = self._rng.choice(["rappi", "didi", "uber"])
 
         return Offer(
             id=f"offer_{self.offer_counter}",
@@ -156,6 +214,14 @@ class SimulationEngine:
             ),
             received_at=self.current_time,
             demand_percentile=demand_percentile,
+            zone_pickup=pickup_zone.zone_id,
+            zone_dropoff=dropoff_zone.zone_id,
+            weight_kg=weight_kg,
+            volume_liters=volume_liters,
+            est_tip_mxn=est_tip_mxn,
+            surge_multiplier=surge_multiplier,
+            restaurant_prep_min=restaurant_prep_min,
+            platform=platform,
         )
 
     def _generate_road_event(self) -> RoadEvent:
@@ -190,6 +256,14 @@ class SimulationEngine:
     # P1.1 — Event log JSONL (contrato oficial)
     # ------------------------------------------------------------------
 
+    def log_event(self, event_type: EventType, sim_time_min: float, payload: dict) -> None:
+        """Escribe un evento oficial al log. Punto de entrada para quien corre
+        el turno: los eventos `decision`, `position_update` y `earnings_update`
+        no los produce este generador (no sabe lo que el agente decidio ni
+        donde esta el repartidor), pero tienen que salir por el mismo archivo y
+        en el mismo orden cronologico."""
+        self._log(event_type, sim_time_min, payload)
+
     def _log(self, event_type: EventType, sim_time_min: float, payload: dict) -> None:
         """Escribe una linea JSONL plana si hay archivo configurado.
 
@@ -223,17 +297,38 @@ class SimulationEngine:
             "fuel_mxn_per_km": self.vehicle.cost_per_km,
         })
 
-    def _log_order_offered(self, offer: Offer) -> None:
-        pickup_zone = self.zone_map.nearest_zone(offer.pickup)
-        dropoff_zone = self.zone_map.nearest_zone(offer.dropoff)
+    def _log_order_offered(self, offer: Offer, distance_pickup_km: float | None = None) -> None:
+        """Evento `order_offered`.
+
+        `distance_pickup_km` es el deadhead, y depende de DONDE ESTA el
+        repartidor -- cosa que este generador no sabe y no debe saber. Quien
+        corre el turno (el arnes de evaluacion, o el loop de simulacion) lo
+        calcula desde la posicion actual y lo pasa aqui. Sin argumento queda en
+        0.0, que es lo unico honesto que se puede decir sin esa posicion.
+        """
+        zone_pickup = (
+            offer.zone_pickup
+            if offer.zone_pickup is not None
+            else self.zone_map.nearest_zone(offer.pickup).zone_id
+        )
+        zone_dropoff = (
+            offer.zone_dropoff
+            if offer.zone_dropoff is not None
+            else self.zone_map.nearest_zone(offer.dropoff).zone_id
+        )
         self._log(EventType.ORDER_OFFERED, self.current_time, {
             "order_id": offer.id,
-            "zone_pickup": pickup_zone.zone_id,
-            "zone_dropoff": dropoff_zone.zone_id,
-            "distance_pickup_km": 0.0,  # deadhead: sin posicion del courier en este generador (ver nota de modulo)
+            "platform": offer.platform,
+            "zone_pickup": zone_pickup,
+            "zone_dropoff": zone_dropoff,
+            "distance_pickup_km": distance_pickup_km if distance_pickup_km is not None else 0.0,
             "distance_delivery_km": self._distance.travel_distance(offer.pickup, offer.dropoff),
             "base_pay_mxn": offer.pay,
-            "surge_multiplier": 1.0,  # TODO: aplicar surge activo por zona si se trackea (ver _generate_road_event)
+            "est_tip_mxn": offer.est_tip_mxn,
+            "surge_multiplier": offer.surge_multiplier,
+            "restaurant_prep_min": offer.restaurant_prep_min,
+            "weight_kg": offer.weight_kg,
+            "volume_liters": offer.volume_liters,
             "vehicle": self.vehicle.type.value,
         })
 
@@ -302,4 +397,5 @@ class SimulationEngine:
         # viven en CourierStateManager, no aqui.
         self._log(EventType.SHIFT_END, self.shift_duration, {
             "orders_offered": self.offer_counter,
+            **self.shift_end_stats,
         })

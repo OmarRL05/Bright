@@ -250,6 +250,20 @@ class DistanceMatrix:
 
 @dataclass
 class Offer:
+    """Una oferta del stream. Habla los dos idiomas del proyecto a la vez.
+
+    Los primeros campos son los del motor VRPTW interno (coordenadas y
+    minutos relativos al turno); los de la seccion v3 son los que el contrato
+    oficial exige en `order_offered` (zonas enteras, peso, volumen, propina,
+    surge). Tener las dos vistas en la MISMA oferta es lo que permite que el
+    arnes de evaluacion y el endpoint /decide midan el mismo stream en vez de
+    dos streams parecidos -- que es exactamente la divergencia que ya costo
+    dos reconciliaciones en este repo.
+
+    Todos los campos nuevos tienen default, asi que construir un Offer "a la
+    v1" sigue funcionando igual.
+    """
+
     id: str
     pickup: tuple[float, float]
     dropoff: tuple[float, float]
@@ -262,6 +276,25 @@ class Offer:
     # Bloque 3 la usa en la evaluacion de umbral. Default neutral para no
     # romper a quien construya un Offer sin este dato todavia.
     demand_percentile: float = 0.5
+
+    # --- v3: campos del contrato oficial (student-materials/courier) -------
+    #: Zonas enteras, tal como las identifica el material oficial. El
+    #: generador ya las conoce al elegir el pickup/dropoff; guardarlas evita
+    #: re-derivarlas con nearest_zone() y que dos consumidores lleguen a
+    #: respuestas distintas sobre la misma oferta.
+    zone_pickup: int | None = None
+    zone_dropoff: int | None = None
+    #: Requeridos para la constraint `vehicle_capacity`. Sin ellos en el
+    #: stream, esa constraint no puede dispararse nunca en un turno completo y
+    #: `safety_violations` del CSV de resultados no mide nada.
+    weight_kg: float = 0.0
+    volume_liters: float = 0.0
+    #: Requeridos para que la economia del turno sea la misma que la del
+    #: endpoint: el surge multiplica la tarifa y la propina se suma aparte.
+    est_tip_mxn: float = 0.0
+    surge_multiplier: float = 1.0
+    restaurant_prep_min: float = 0.0
+    platform: str | None = None
 
 
 @dataclass

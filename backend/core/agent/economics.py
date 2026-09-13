@@ -49,10 +49,14 @@ from core.models import DEFAULT_ZONE_MAP, VehicleProfile
 #: significado pudiendo desincronizarse.
 RESERVATION_WAGE_MXN_HR = strategy_layer.DEFAULT_RESERVATION_WAGE_MXN_HR
 
-#: Cuanto pesa la zona de dropoff en la tasa ajustada. Con 0.4, terminar en
-#: Centro (demand_score 0.9) vale +16% y terminar en Apodaca (0.3) vale -8%.
-#: Placeholder a calibrar con corridas reales.
-DROPOFF_DEMAND_WEIGHT = 0.4
+#: Cuanto pesa la zona de dropoff en la tasa ajustada. Con 0.6, terminar en
+#: Centro (demand_score 0.9) vale +24% y terminar en Apodaca (0.3) vale -12%.
+#:
+#: Calibrado sobre TUNING_SEEDS (ver docs/Bloque 3/RESULTADOS.md): aporta
+#: +6.1% de ganancias medias. Se eligio 0.6 y no el maximo de la rejilla (0.4)
+#: porque con 12 turnos la diferencia entre los dos esta dentro del ruido y 0.6
+#: es el punto cuyo PEOR vecino en la rejilla es mas alto.
+DROPOFF_DEMAND_WEIGHT = 0.6
 
 #: demand_score que se considera "ni caliente ni fria" (sin bonus ni castigo).
 NEUTRAL_DEMAND_SCORE = 0.5
