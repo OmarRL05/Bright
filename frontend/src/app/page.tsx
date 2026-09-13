@@ -19,14 +19,17 @@ import {
 const Map = dynamic(() => import("@/components/Map").then((m) => m.Map), {
   ssr: false,
   loading: () => (
-    <div className="flex h-full items-center justify-center border border-line text-sm text-muted">
+    <div className="flex h-full items-center justify-center text-sm text-muted">
       Cargando mapa…
     </div>
   ),
 });
 
+/** Tope de latencia que fija el protocolo oficial, en ms. */
+const TOPE_LATENCIA_MS = 50;
+
 /**
- * Consola de operaciones del agente (Bloque 6, P2.3).
+ * Consola de despacho del agente (Bloque 6, P2.3).
  *
  * Todo lo que se pinta sale de `GET /decisions`, `/status`, `/zones` y
  * `/shocks`. No hay datos de relleno: si el backend no contesta, la pantalla
@@ -34,10 +37,16 @@ const Map = dynamic(() => import("@/components/Map").then((m) => m.Map), {
  * cifras inventadas es peor que uno vacío en una evaluación donde "¿por qué
  * debería confiar en ese número?" es una de las preguntas escritas.
  *
- * La jerarquía no es casual. Un dashboard normal pone arriba lo que crece;
- * aquí lo que importa son los **rechazos** y la regla que los causó, así que
- * el libro de decisiones ocupa una columna entera a altura completa y todo lo
- * demás le hace sitio.
+ * Dos decisiones de forma que no son cosméticas:
+ *
+ *  - **Cabe en una pantalla.** A partir de `lg` la consola mide exactamente el
+ *    alto de la ventana y lo que hace scroll son los paneles, no la página. La
+ *    capa de estrategia y los turnos grabados estaban por debajo del pliegue:
+ *    en una demo de diez minutos, lo que hay que bajar a buscar no existe.
+ *  - **Lo que importa son los rechazos y la regla que los causó**, así que el
+ *    libro de decisiones ocupa una columna entera a altura completa y la banda
+ *    superior abre con el reparto seguridad / paga / aceptadas en vez de con
+ *    cuatro cifras del mismo tamaño.
  */
 export default function Home() {
   const { decisions, status, replays, connected, error } = useAgent(50);
@@ -53,53 +62,58 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen bg-ink px-5 py-4 text-text">
-      <header className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2 border-b border-line pb-3">
-        <h1 className="text-lg font-medium tracking-tight">The Courier</h1>
+    <div className="flex min-h-dvh flex-col gap-3 bg-ink px-4 py-3 text-text lg:h-dvh lg:overflow-hidden">
+      <header className="flex shrink-0 flex-wrap items-baseline justify-between gap-x-6 gap-y-2 border-b border-line pb-2.5">
+        <div className="flex items-baseline gap-3">
+          <h1 className="text-[17px] font-semibold tracking-[-0.015em]">The Courier</h1>
+          <span className="text-xs text-muted">consola de despacho</span>
+        </div>
 
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs">
-          <span className="text-muted">
-            {/* "En vivo" hacia pensar que hay un turno corriendo de fondo. No
-                lo hay: el feed solo se mueve cuando algo postea a /decide. */}
-            {enVivo
-              ? "Últimas decisiones del servidor"
-              : `Turno grabado, seed ${replaySeed}`}
-          </span>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+          {/* "En vivo" hacia pensar que hay un turno corriendo de fondo. No lo
+              hay: el feed solo se mueve cuando algo postea a /decide. */}
+          {enVivo ? (
+            <span className="text-muted">Últimas decisiones del servidor</span>
+          ) : (
+            <span className="border border-line bg-panel px-2 py-0.5 text-muted">
+              Turno grabado · <span className="font-mono text-text">seed {replaySeed}</span>
+            </span>
+          )}
           {status?.degraded && (
             <span className="border border-safety px-2 py-0.5 font-medium text-safety">
               Modo degradado — decidiendo con la última estrategia conocida
             </span>
           )}
-          <span className={connected ? "text-go" : "text-alert"}>
+          <span className={`flex items-center gap-1.5 ${connected ? "text-go" : "text-alert"}`}>
+            <span
+              aria-hidden
+              className={`h-1.5 w-1.5 rounded-full ${connected ? "bg-go" : "bg-alert"}`}
+            />
             {connected ? "Backend conectado" : "Sin backend"}
           </span>
         </div>
       </header>
 
       {error && (
-        <p className="mt-3 border border-alert px-4 py-2.5 text-sm text-alert">
+        <p className="shrink-0 border border-alert px-3 py-2 text-[13px] text-alert">
           No se pudo leer el backend: {error}. Arráncalo con{" "}
           <code className="font-mono">uvicorn main:app --port 8000</code>.
         </p>
       )}
 
-      <InstrumentStrip decisions={visibles} status={status} enVivo={enVivo} />
+      <Banda decisions={visibles} status={status} enVivo={enVivo} />
 
-      <main className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_26rem]">
-        <div className="flex flex-col gap-4">
-          <section>
-            <SectionLabel>
-              {enVivo ? "Mapa de la operación" : "Mapa del turno grabado"}
-            </SectionLabel>
-            <div className="h-[30rem] border border-line">
-              <Map decisions={visibles} live={enVivo} />
-            </div>
-          </section>
+      <main className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_28rem]">
+        <section className="flex min-h-[22rem] flex-col lg:min-h-0">
+          <SectionLabel>
+            {enVivo ? "Mapa de la operación" : "Mapa del turno grabado"}
+          </SectionLabel>
+          <div className="min-h-0 flex-1 border border-line">
+            <Map decisions={visibles} live={enVivo} />
+          </div>
+        </section>
 
-          <Blocking decisions={visibles} />
-        </div>
-
-        <section className="flex min-h-[30rem] flex-col lg:h-[calc(100vh-13rem)]">
+        <section className="flex min-h-[26rem] flex-col lg:min-h-0">
           <SectionLabel>Libro de decisiones</SectionLabel>
           <div className="min-h-0 flex-1">
             <DashboardFeed
@@ -114,8 +128,11 @@ export default function Home() {
         </section>
       </main>
 
-      <footer className="mt-4 grid gap-4 md:grid-cols-2">
-        <Strategy status={status} enVivo={enVivo} />
+      {/* Los tres resúmenes del turno, a una altura fija: nada de esto crece
+          tanto como para empujar al mapa, y nada queda por debajo del pliegue. */}
+      <footer className="grid shrink-0 gap-3 md:grid-cols-2 lg:h-40 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)_13rem]">
+        <Bloqueos decisions={visibles} />
+        <Estrategia status={status} enVivo={enVivo} />
         <Replays
           replays={replays}
           activo={replaySeed}
@@ -131,19 +148,22 @@ export default function Home() {
 }
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
-  return <h2 className="mb-1.5 text-xs text-muted">{children}</h2>;
+  return <h2 className="mb-1 shrink-0 text-xs text-muted">{children}</h2>;
 }
 
 /**
- * Los cuatro números que describen el estado del agente, en una banda única
- * separada por filetes.
+ * La banda superior: el reparto del turno, y las dos magnitudes que se miden
+ * contra algo.
  *
- * No son cuatro tarjetas: cuatro cajas idénticas dicen "estas cosas son del
- * mismo tipo y ninguna importa más", y aquí la peor latencia y el salario de
- * reserva son magnitudes distintas que se leen de un vistazo, no elementos de
- * una colección.
+ * No son cuatro cifras iguales en cuatro cajas iguales. Cuatro cajas idénticas
+ * dicen "estas cosas son del mismo tipo y ninguna importa más", y aquí no es
+ * verdad: lo característico de este agente es **que rechaza trabajo para no
+ * romper una regla de seguridad**, así que eso abre la pantalla como una sola
+ * barra repartida. Esa barra es además la leyenda de color de toda la consola
+ * — el mapa y el libro usan exactamente estos tres tonos, así que ninguno de
+ * los dos necesita explicarse aparte.
  */
-function InstrumentStrip({
+function Banda({
   decisions,
   status,
   enVivo,
@@ -153,71 +173,145 @@ function InstrumentStrip({
   enVivo: boolean;
 }) {
   const stats = useMemo(() => {
-    const total = decisions.length;
-    const aceptadas = decisions.filter((d) => d.decision === "ACCEPT").length;
-    const latencias = decisions.map((d) => d.latency_ms);
-    const medidas = latencias.filter((ms) => ms > 0);
+    let aceptadas = 0;
+    let seguridad = 0;
+    let paga = 0;
+    for (const d of decisions) {
+      if (d.decision === "ACCEPT") aceptadas += 1;
+      else if (isSafetyConstraint(d.binding_constraint)) seguridad += 1;
+      else paga += 1;
+    }
+    // Solo cuentan las latencias MEDIDAS. Un turno grabado las trae en 0
+    // porque el arnés no las mide; promediarlas daría "0.00 ms", que no es una
+    // marca excelente sino un dato que no existe.
+    const medidas = decisions.map((d) => d.latency_ms).filter((ms) => ms > 0);
     return {
-      total,
+      total: decisions.length,
       aceptadas,
-      aceptacion: total ? (aceptadas / total) * 100 : 0,
-      // Solo cuentan las latencias MEDIDAS. Un turno grabado las trae en 0
-      // porque el arnés no las mide; promediarlas daría "0.00 ms", que no es
-      // una marca excelente sino un dato que no existe.
+      seguridad,
+      paga,
       latenciaMax: medidas.length ? Math.max(...medidas) : null,
     };
   }, [decisions]);
 
+  const tramos = [
+    {
+      clase: "aceptadas",
+      n: stats.aceptadas,
+      color: "bg-go",
+      texto: "text-go",
+      palabra: stats.aceptadas === 1 ? "aceptada" : "aceptadas",
+    },
+    {
+      clase: "seguridad",
+      n: stats.seguridad,
+      color: "bg-safety",
+      texto: "text-safety",
+      palabra: stats.seguridad === 1 ? "parada por seguridad" : "paradas por seguridad",
+    },
+    {
+      clase: "paga",
+      n: stats.paga,
+      color: "bg-pay",
+      texto: "text-pay",
+      palabra: stats.paga === 1 ? "rechazada por paga" : "rechazadas por paga",
+    },
+  ].filter((t) => t.n > 0);
+
+  const { latenciaMax } = stats;
+  const dentro = latenciaMax !== null && latenciaMax < TOPE_LATENCIA_MS;
+
   return (
-    <dl className="mt-4 grid grid-cols-2 border border-line bg-panel md:grid-cols-4">
-      <Reading
-        valor={String(stats.total)}
-        etiqueta="Ofertas evaluadas"
-        nota={`${stats.aceptadas} aceptadas`}
-      />
-      <Reading
-        valor={`${stats.aceptacion.toFixed(1)}%`}
-        etiqueta="Se acepta"
-        nota="de las ofertas que llegaron"
-      />
-      <Reading
-        valor={stats.latenciaMax === null ? "—" : `${stats.latenciaMax.toFixed(2)} ms`}
+    <section className="grid shrink-0 border border-line bg-panel md:grid-cols-[minmax(0,1fr)_13rem_13rem]">
+      <div className="border-line px-4 py-3 md:border-r">
+        <p className="text-[13px]">
+          <span className="tabular text-2xl font-semibold tracking-[-0.02em]">
+            {stats.total}
+          </span>{" "}
+          <span className="text-muted">
+            {stats.total === 1 ? "oferta evaluada" : "ofertas evaluadas"}
+            {!enVivo && " en el turno grabado"}
+          </span>
+        </p>
+
+        {stats.total === 0 ? (
+          <div className="mt-2.5 h-2 bg-line" />
+        ) : (
+          <>
+            <div
+              className="mt-2.5 flex h-2 gap-px overflow-hidden"
+              role="img"
+              aria-label={tramos
+                .map((t) => `${t.n} ${t.palabra}`)
+                .join("; ")}
+            >
+              {tramos.map((t) => (
+                <div
+                  key={t.clase}
+                  className={t.color}
+                  style={{ width: `${(t.n / stats.total) * 100}%` }}
+                />
+              ))}
+            </div>
+
+            <ul className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs">
+              {tramos.map((t) => (
+                <li key={t.clase} className="flex items-baseline gap-1.5">
+                  <span aria-hidden className={`h-2 w-2 self-center ${t.color}`} />
+                  <span className="tabular font-mono font-medium">{t.n}</span>
+                  <span className={t.texto}>{t.palabra}</span>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
+
+      <Escalar
+        valor={latenciaMax === null ? "—" : `${latenciaMax.toFixed(2)} ms`}
         etiqueta="Peor latencia"
+        tono={latenciaMax === null ? "" : dentro ? "text-go" : "text-alert"}
         nota={
-          stats.latenciaMax === null
+          latenciaMax === null
             ? enVivo
               ? "sin decisiones medidas todavía"
               : "no se mide al grabar un turno"
-            : "tope del protocolo: 50 ms"
+            : dentro
+              ? `${Math.round(TOPE_LATENCIA_MS / latenciaMax)}× por debajo del tope de ${TOPE_LATENCIA_MS} ms`
+              : `por encima del tope de ${TOPE_LATENCIA_MS} ms`
         }
-        bien={stats.latenciaMax === null ? undefined : stats.latenciaMax < 50}
+        borde
       />
-      <Reading
+
+      <Escalar
         valor={status ? `$${status.reservation_wage_mxn_hr.toFixed(0)}` : "—"}
         etiqueta="Salario de reserva"
-        nota="por hora; bajo esto se rechaza"
+        nota={status ? "por hora; bajo esto se rechaza" : "sin leer /status"}
       />
-    </dl>
+    </section>
   );
 }
 
-function Reading({
+function Escalar({
   valor,
   etiqueta,
   nota,
-  bien,
+  tono = "",
+  borde = false,
 }: {
   valor: string;
   etiqueta: string;
   nota: string;
-  bien?: boolean;
+  tono?: string;
+  borde?: boolean;
 }) {
-  const tono = bien === undefined ? "" : bien ? "text-go" : "text-alert";
   return (
-    <div className="border-line px-4 py-3 [&:not(:last-child)]:border-r">
-      <dd className={`tabular text-2xl font-medium tracking-tight ${tono}`}>{valor}</dd>
-      <dt className="mt-0.5 text-[13px]">{etiqueta}</dt>
-      <p className="text-[11px] text-muted">{nota}</p>
+    <div
+      className={`border-t border-line px-4 py-3 md:border-t-0 ${borde ? "md:border-r" : ""}`}
+    >
+      <p className={`tabular text-2xl font-semibold tracking-[-0.02em] ${tono}`}>{valor}</p>
+      <p className="mt-0.5 text-[13px]">{etiqueta}</p>
+      <p className="text-[11px] leading-snug text-muted">{nota}</p>
     </div>
   );
 }
@@ -226,11 +320,15 @@ function Reading({
  * Qué constraints están mordiendo, como distribución y no como lista.
  *
  * Es una distribución: tiene forma, y una barra la enseña de un vistazo
- * mientras que una lista con viñetas obliga a comparar cifras a mano. El color
- * es el mismo del libro de decisiones — ámbar si paró la seguridad, pizarra si
- * pararon las cuentas — así que no necesita leyenda.
+ * mientras que una lista con viñetas obliga a comparar cifras a mano. Cada
+ * fila es etiqueta · barra · cuenta en la misma línea; antes la cuenta vivía
+ * pegada al borde derecho del panel, a casi mil píxeles de su etiqueta, y
+ * emparejarlas con la vista costaba más que leer la lista.
+ *
+ * El color es el mismo de la banda y del libro — ámbar si paró la seguridad,
+ * pizarra si pararon las cuentas — así que no necesita leyenda.
  */
-function Blocking({ decisions }: { decisions: DecisionEvent[] }) {
+function Bloqueos({ decisions }: { decisions: DecisionEvent[] }) {
   const filas = useMemo(() => {
     const total: Partial<Record<BindingConstraint, number>> = {};
     for (const decision of decisions) {
@@ -246,27 +344,33 @@ function Blocking({ decisions }: { decisions: DecisionEvent[] }) {
       constraint,
       veces,
       ancho: (veces / tope) * 100,
+      seguridad: isSafetyConstraint(constraint),
     }));
   }, [decisions]);
 
   return (
-    <section>
+    <section className="flex min-h-0 flex-col">
       <SectionLabel>Qué está bloqueando</SectionLabel>
-      <div className="border border-line bg-panel px-4 py-3">
+      <div className="scroll-consola min-h-0 flex-1 overflow-y-auto border border-line bg-panel px-4 py-2.5">
         {filas.length === 0 ? (
           <p className="text-xs text-muted">Ninguna constraint ha mordido todavía.</p>
         ) : (
-          <ul className="space-y-2">
-            {filas.map(({ constraint, veces, ancho }) => (
-              <li key={constraint}>
-                <div className="flex items-baseline justify-between gap-3 text-xs">
-                  <span>{CONSTRAINT_LABELS[constraint]}</span>
-                  <span className="tabular font-mono text-muted">{veces}</span>
-                </div>
-                <div
-                  className={`mt-1 h-1 ${isSafetyConstraint(constraint) ? "bg-safety" : "bg-pay"}`}
-                  style={{ width: `${Math.max(ancho, 3)}%` }}
-                />
+          <ul className="space-y-1">
+            {filas.map(({ constraint, veces, ancho, seguridad }) => (
+              <li
+                key={constraint}
+                className="grid grid-cols-[9.5rem_minmax(0,1fr)_2rem] items-center gap-2.5 text-[11px]"
+              >
+                <span className="truncate">{CONSTRAINT_LABELS[constraint]}</span>
+                {/* El riel deja ver la proporción; una barra suelta sobre el
+                    fondo sólo deja comparar barras entre sí. */}
+                <span className="h-1.5 bg-line-soft">
+                  <span
+                    className={`block h-full ${seguridad ? "bg-safety" : "bg-pay"}`}
+                    style={{ width: `${Math.max(ancho, 2)}%` }}
+                  />
+                </span>
+                <span className="tabular text-right font-mono text-muted">{veces}</span>
               </li>
             ))}
           </ul>
@@ -276,7 +380,7 @@ function Blocking({ decisions }: { decisions: DecisionEvent[] }) {
   );
 }
 
-function Strategy({
+function Estrategia({
   status,
   enVivo,
 }: {
@@ -285,30 +389,31 @@ function Strategy({
 }) {
   if (!status) return null;
 
-  // Este panel describe el SERVIDOR, siempre. Cuando se mira un turno
-  // grabado, el mapa y el libro hablan del turno y este no: son dos sujetos
-  // distintos uno al lado del otro, y sin decirlo se leen como uno solo.
+  // Este panel describe el SERVIDOR, siempre. Cuando se mira un turno grabado,
+  // el mapa y el libro hablan del turno y este no: son dos sujetos distintos
+  // uno al lado del otro, y sin decirlo se leen como uno solo.
   return (
-    <section className={enVivo ? "" : "opacity-60"}>
+    <section className={`flex min-h-0 flex-col ${enVivo ? "" : "opacity-60"}`}>
       <SectionLabel>
         Capa de estrategia
         {!enVivo && " — estado del servidor, no del turno que estás viendo"}
       </SectionLabel>
-      <div className="border border-line bg-panel px-4 py-3 text-xs">
-        <dl className="grid grid-cols-3 gap-x-4 gap-y-1">
+      <div className="scroll-consola min-h-0 flex-1 overflow-y-auto border border-line bg-panel px-4 py-2.5 text-xs">
+        <dl className="flex flex-wrap gap-x-6 gap-y-1">
           <Dato etiqueta="Modelo" valor={status.advisor} />
           <Dato etiqueta="Origen" valor={status.strategy_source} />
           <Dato etiqueta="Revisión" valor={String(status.strategy_revision)} />
+          <Dato etiqueta="Decisiones" valor={String(status.decisions_recorded)} />
         </dl>
-        <p className="mt-2.5 max-w-[62ch] leading-relaxed text-muted">
+        <p className="mt-2 max-w-[70ch] leading-relaxed text-muted">
           {status.strategy_reasoning}
         </p>
         {status.last_model_error && (
-          <p className="mt-2 border-l-2 border-safety pl-2 font-mono text-[11px] text-safety">
+          <p className="mt-1.5 border-l-2 border-safety pl-2 font-mono text-[11px] text-safety">
             {status.last_model_error}
           </p>
         )}
-        <p className="mt-2.5 max-w-[62ch] text-[11px] leading-relaxed text-muted">
+        <p className="mt-2 max-w-[70ch] text-[11px] leading-relaxed text-muted">
           Distancias — {status.distance_model}
         </p>
       </div>
@@ -318,7 +423,7 @@ function Strategy({
 
 function Dato({ etiqueta, valor }: { etiqueta: string; valor: string }) {
   return (
-    <div>
+    <div className="flex items-baseline gap-1.5">
       <dt className="text-[11px] text-muted">{etiqueta}</dt>
       <dd className="font-mono">{valor}</dd>
     </div>
@@ -337,22 +442,23 @@ function Replays({
   onVivo: () => void;
 }) {
   return (
-    <section>
+    <section className="flex min-h-0 flex-col">
       <SectionLabel>Turnos grabados</SectionLabel>
-      <div className="border border-line bg-panel px-4 py-3">
+      <div className="scroll-consola min-h-0 flex-1 overflow-y-auto border border-line bg-panel px-4 py-2.5">
         {replays.length === 0 ? (
           <p className="text-xs text-muted">
             Ninguno todavía. Graba uno con{" "}
             <code className="font-mono">scripts/replay.py --seed N --record</code>.
           </p>
         ) : (
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-1.5">
             {replays.map((replay) => (
               <button
                 key={replay.seed}
+                type="button"
                 onClick={() => onVer(replay.seed)}
                 aria-pressed={activo === replay.seed}
-                className={`border px-2.5 py-1 font-mono text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-go ${
+                className={`border px-2.5 py-1 font-mono text-xs transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-go ${
                   activo === replay.seed
                     ? "border-go text-go"
                     : "border-line text-muted hover:border-muted hover:text-text"
@@ -363,8 +469,9 @@ function Replays({
             ))}
             {activo !== null && (
               <button
+                type="button"
                 onClick={onVivo}
-                className="border border-line px-2.5 py-1 text-xs text-muted hover:border-muted hover:text-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-go"
+                className="border border-line px-2.5 py-1 text-xs text-muted transition-colors hover:border-muted hover:text-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-go"
               >
                 Volver a en vivo
               </button>
