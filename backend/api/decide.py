@@ -80,75 +80,70 @@ def _clamp_reason(reason: str) -> str:
 
 @router.post("/decide", response_model=DecideResponse)
 async def decide(request: DecideRequest) -> DecideResponse:
+    """Nunca debe devolver 500: un crash en la ventana de decision es un
+    hard failure de Feasibility (evaluation_protocol.md seccion 7). El
+    parseo del body ya paso por pydantic antes de llegar aqui (422 si el
+    request esta mal formado, lo cual es comportamiento esperado del
+    framework, no un crash); lo que este try/except cubre es cualquier
+    excepcion INESPERADA una vez que el request ya es valido -- un vehicle
+    profile faltante, un override raro, etc. -- para responder SKIP con un
+    reason honesto en vez de propagarla.
+    """
     t0 = time.perf_counter()
-    overrides = request.courier_state_overrides
+    try:
+        overrides = request.courier_state_overrides
 
-    total_time_min = _order_total_time_min(request)
+        total_time_min = _order_total_time_min(request)
 
-    economics = evaluate_economics(
-        base_pay_mxn=request.base_pay_mxn,
-        est_tip_mxn=request.est_tip_mxn,
-        surge_multiplier=request.surge_multiplier,
-        total_time_min=total_time_min,
-        deadhead_km=request.distance_pickup_km,
-    )
-
-    violation = evaluate_safety(
-        vehicle=request.vehicle,
-        weight_kg=request.weight_kg,
-        volume_liters=request.volume_liters,
-        sim_time=request.sim_time,
-        zone_dropoff=request.zone_dropoff,
-        continuous_riding_min=overrides.continuous_riding_min,
-        order_total_time_min=total_time_min,
-        shift_end_time=overrides.shift_end_time,
-    )
-
-    if violation is not None:
-        decision: str = "SKIP"
-        binding_constraint = violation.constraint
-        reason = violation.reason
-        alternatives = [AlternativeConsidered(option="ACCEPT", rejected_because=reason)]
-    elif economics.adjusted_rate_mxn_hr < RESERVATION_WAGE_MXN_HR:
-        decision = "SKIP"
-        binding_constraint = "reservation_wage"
-        reason = (
-            f"${economics.adjusted_rate_mxn_hr:.0f}/hr < salario de reserva "
-            f"${RESERVATION_WAGE_MXN_HR:.0f}/hr"
+        economics = evaluate_economics(
+            base_pay_mxn=request.base_pay_mxn,
+            est_tip_mxn=request.est_tip_mxn,
+            surge_multiplier=request.surge_multiplier,
+            total_time_min=total_time_min,
+            deadhead_km=request.distance_pickup_km,
         )
-        alternatives = [AlternativeConsidered(option="ACCEPT", rejected_because=reason)]
-    else:
-        decision = "ACCEPT"
-        binding_constraint = None
-        reason = (
-            f"${economics.adjusted_rate_mxn_hr:.0f}/hr >= salario de reserva "
-            f"${RESERVATION_WAGE_MXN_HR:.0f}/hr, sin violar constraints de seguridad"
+
+        violation = evaluate_safety(
+            vehicle=request.vehicle,
+            weight_kg=request.weight_kg,
+            volume_liters=request.volume_liters,
+            sim_time=request.sim_time,
+            zone_dropoff=request.zone_dropoff,
+            continuous_riding_min=overrides.continuous_riding_min,
+            order_total_time_min=total_time_min,
+            shift_end_time=overrides.shift_end_time,
         )
-        alternatives = [
-            AlternativeConsidered(
-                option="SKIP", rejected_because="pasa las 5 constraints y el salario de reserva"
+
+        if violation is not None:
+            decision: str = "SKIP"
+            binding_constraint = violation.constraint
+            reason = violation.reason
+            alternatives = [AlternativeConsidered(option="ACCEPT", rejected_because=reason)]
+        elif economics.adjusted_rate_mxn_hr < RESERVATION_WAGE_MXN_HR:
+            decision = "SKIP"
+            binding_constraint = "reservation_wage"
+            reason = (
+                f"${economics.adjusted_rate_mxn_hr:.0f}/hr < salario de reserva "
+                f"${RESERVATION_WAGE_MXN_HR:.0f}/hr"
             )
-        ]
+            alternatives = [AlternativeConsidered(option="ACCEPT", rejected_because=reason)]
+        else:
+            decision = "ACCEPT"
+            binding_constraint = None
+            reason = (
+                f"${economics.adjusted_rate_mxn_hr:.0f}/hr >= salario de reserva "
+                f"${RESERVATION_WAGE_MXN_HR:.0f}/hr, sin violar constraints de seguridad"
+            )
+            alternatives = [
+                AlternativeConsidered(
+                    option="SKIP", rejected_because="pasa las 5 constraints y el salario de reserva"
+                )
+            ]
 
-    reason = _clamp_reason(reason)
-    latency_ms = (time.perf_counter() - t0) * 1000
+        reason = _clamp_reason(reason)
+        economics_breakdown = EconomicsBreakdown(**economics.__dict__)
 
-    response = DecideResponse(
-        order_id=request.order_id,
-        decision=decision,
-        reason=reason,
-        binding_constraint=binding_constraint,
-        latency_ms=latency_ms,
-        tier="tier1",  # sin capa tier2/LLM implementada todavia (P2.1)
-        degraded=False,
-        economics=EconomicsBreakdown(**economics.__dict__),
-    )
-
-    _decision_log[request.order_id] = ExplainDecisionResponse(
-        order_id=request.order_id,
-        decision=decision,
-        reason=reason,
-        inputs={
+        explain_inputs = {
             "sim_time": request.sim_time.isoformat(),
             "zone_pickup": request.zone_pickup,
             "zone_dropoff": request.zone_dropoff,
@@ -162,7 +157,32 @@ async def decide(request: DecideRequest) -> DecideResponse:
             "total_time_min": total_time_min,
             "deadhead_km": request.distance_pickup_km,
             "economics": economics.__dict__,
-        },
+        }
+    except Exception as exc:  # noqa: BLE001 -- deliberado, ver docstring
+        decision, binding_constraint, reason = "SKIP", None, f"error interno al evaluar la oferta: {exc}"
+        reason = _clamp_reason(reason)
+        economics_breakdown = None
+        alternatives = [AlternativeConsidered(option="ACCEPT", rejected_because=reason)]
+        explain_inputs = {"error": str(exc)}
+
+    latency_ms = (time.perf_counter() - t0) * 1000
+
+    response = DecideResponse(
+        order_id=request.order_id,
+        decision=decision,
+        reason=reason,
+        binding_constraint=binding_constraint,
+        latency_ms=latency_ms,
+        tier="tier1",  # sin capa tier2/LLM implementada todavia (P2.1)
+        degraded=False,
+        economics=economics_breakdown,
+    )
+
+    _decision_log[request.order_id] = ExplainDecisionResponse(
+        order_id=request.order_id,
+        decision=decision,
+        reason=reason,
+        inputs=explain_inputs,
         alternatives_considered=alternatives,
     )
 
