@@ -17,6 +17,12 @@ class Offer:
     pay: float
     time_window: tuple[float, float]
     received_at: float
+    # Senal de demanda historica de la zona del pickup, en [0, 1] (percentil
+    # respecto al resto de zonas/horas). Bloque 1 la calcula a partir del
+    # dataset de Kaggle (ver docs/02_Documentacion_Tecnica.md seccion 4);
+    # Bloque 3 la usa en la evaluacion de umbral. Default neutral para no
+    # romper a quien construya un Offer sin este dato todavia.
+    demand_percentile: float = 0.5
 
 
 @dataclass

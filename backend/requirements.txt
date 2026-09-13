@@ -7,6 +7,7 @@ python-dotenv==1.0.1
 # Ruteo / optimizacion (Bloque 4 y 5)
 ortools==9.11.4210
 osmnx==2.0.1
+scikit-learn==1.9.1
 networkx==3.4.2
 pandas==2.2.3
 numpy==2.2.1
