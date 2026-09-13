@@ -49,7 +49,7 @@ class FakeAdvisor:
         if self.error:
             raise self.error
         return self.proposal or ModelProposal(
-            reservation_wage_mxn_hr=185.0, target_zone=11, reasoning="surge en la zona 11"
+            reservation_wage_mxn_hr=275.0, target_zone=11, reasoning="surge en la zona 11"
         )
 
 
@@ -94,7 +94,7 @@ class TestModoDegradado:
         layer = StrategyLayer(FakeAdvisor())
         layer.refresh_now(T0, CONTEXT)
         buena = layer.snapshot()
-        assert buena.reservation_wage_mxn_hr == 185.0
+        assert buena.reservation_wage_mxn_hr == 275.0
         assert buena.degraded is False
 
         layer.use_advisor(FakeAdvisor(error=ModelUnavailable("sin red")))
@@ -102,7 +102,7 @@ class TestModoDegradado:
 
         degradada = layer.snapshot()
         assert degradada.degraded is True
-        assert degradada.reservation_wage_mxn_hr == 185.0, (
+        assert degradada.reservation_wage_mxn_hr == 275.0, (
             "se sigue decidiendo con la ultima estrategia conocida"
         )
 
@@ -144,13 +144,13 @@ class TestRecuperacion:
         assert layer.snapshot().degraded is True
 
         layer.use_advisor(
-            FakeAdvisor(ModelProposal(reservation_wage_mxn_hr=210.0, reasoning="llovio"))
+            FakeAdvisor(ModelProposal(reservation_wage_mxn_hr=300.0, reasoning="llovio"))
         )
         layer.refresh_now(T0 + timedelta(minutes=30), CONTEXT)
 
         recuperada = layer.snapshot()
         assert recuperada.degraded is False
-        assert recuperada.reservation_wage_mxn_hr == 210.0
+        assert recuperada.reservation_wage_mxn_hr == 300.0
         assert layer.status().consecutive_failures == 0
 
     def test_cada_publicacion_sube_la_revision(self):
@@ -233,15 +233,44 @@ class TestCotasDelSalarioDeReserva:
     @pytest.mark.parametrize(
         "propuesto, esperado",
         [
-            (5.0, st.MIN_RESERVATION_WAGE_MXN_HR),
-            (99999.0, st.MAX_RESERVATION_WAGE_MXN_HR),
-            (200.0, 200.0),
+            # La banda relativa es la que manda sobre una PROPUESTA: el modelo
+            # no puede alejarse del umbral calibrado mas de lo permitido.
+            (5.0, st.DEFAULT_RESERVATION_WAGE_MXN_HR * st.MIN_STRATEGY_MULTIPLIER),
+            (99999.0, st.DEFAULT_RESERVATION_WAGE_MXN_HR * st.MAX_STRATEGY_MULTIPLIER),
+            (275.0, 275.0),  # dentro de banda: pasa tal cual
         ],
     )
     def test_una_propuesta_absurda_queda_recortada(self, propuesto, esperado):
         layer = StrategyLayer(FakeAdvisor(ModelProposal(reservation_wage_mxn_hr=propuesto)))
         layer.refresh_now(T0, CONTEXT)
         assert layer.snapshot().reservation_wage_mxn_hr == esperado
+
+    def test_el_modelo_no_puede_tirar_el_turno(self):
+        """El caso real que motivo la banda.
+
+        Con la API de verdad, el modelo propuso bajar el umbral calibrado de
+        $250 a $120 -- y lo justifico diciendo que lo *elevaba*. Segun nuestro
+        propio barrido, ese umbral cuesta cerca de un 30% de las ganancias del
+        turno, y llegaba con `degraded: false` y todo en verde. La banda existe
+        para que un asesor que no ha visto la calibracion no pueda deshacerla.
+        """
+        layer = StrategyLayer(FakeAdvisor(ModelProposal(reservation_wage_mxn_hr=120.0)))
+        layer.refresh_now(T0, CONTEXT)
+        piso = st.DEFAULT_RESERVATION_WAGE_MXN_HR * st.MIN_STRATEGY_MULTIPLIER
+        assert layer.snapshot().reservation_wage_mxn_hr == pytest.approx(piso)
+        assert layer.snapshot().reservation_wage_mxn_hr > 120.0
+
+    def test_un_valor_grabado_NO_pasa_por_la_banda(self):
+        """Un valor del log es un hecho, no una propuesta.
+
+        Recortarlo al reinyectarlo haria que el replay produjera decisiones
+        distintas de las grabadas -- justo lo que el diff del protocolo
+        (seccion 6) existe para detectar.
+        """
+        layer = StrategyLayer(FakeAdvisor())
+        fuera_de_banda = st.DEFAULT_RESERVATION_WAGE_MXN_HR * 0.5
+        layer.apply_recorded({"reservation_wage_mxn_hr": fuera_de_banda})
+        assert layer.snapshot().reservation_wage_mxn_hr == pytest.approx(fuera_de_banda)
 
     def test_el_recorte_queda_registrado_no_se_esconde(self):
         layer = StrategyLayer(FakeAdvisor(ModelProposal(reservation_wage_mxn_hr=99999.0)))
@@ -290,7 +319,7 @@ class TestCredencial:
             def propose(self, context):
                 if not os.environ.get("GEMINI_API_KEY"):
                     raise ModelUnavailable("GEMINI_API_KEY ausente o vacia en el entorno")
-                return ModelProposal(reservation_wage_mxn_hr=185.0, reasoning="todo normal")
+                return ModelProposal(reservation_wage_mxn_hr=275.0, reasoning="todo normal")
 
         monkeypatch.setenv("GEMINI_API_KEY", "clave-de-mentiras")
         layer = StrategyLayer(AdvisorQueMiraElEntorno())
@@ -301,7 +330,7 @@ class TestCredencial:
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)  # los jueces
         layer.refresh_now(T0 + timedelta(minutes=30), CONTEXT)
         assert layer.snapshot().degraded is True
-        assert layer.snapshot().reservation_wage_mxn_hr == 185.0
+        assert layer.snapshot().reservation_wage_mxn_hr == 275.0
 
         monkeypatch.setenv("GEMINI_API_KEY", "clave-de-mentiras")  # restaurada
         layer.refresh_now(T0 + timedelta(minutes=60), CONTEXT)

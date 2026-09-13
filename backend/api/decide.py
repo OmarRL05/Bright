@@ -358,17 +358,30 @@ def _refresh_strategy(request: DecideRequest) -> None:
     Si el modelo esta caido, `maybe_refresh` marca degradado y el siguiente
     /decide lo reporta; ningun pedido espera por esto.
     """
+    recientes = JOURNAL.recent(25)
+    aceptadas = sum(1 for r in recientes if r.decision == "ACCEPT")
+    motivos: dict[str, int] = {}
+    for r in recientes:
+        if r.binding_constraint:
+            motivos[r.binding_constraint] = motivos.get(r.binding_constraint, 0) + 1
+
     STRATEGY.maybe_refresh(
         request.sim_time,
         {
+            # El contexto es la unica evidencia que el modelo tiene para
+            # justificar un multiplicador. Mandarle solo la hora y el vehiculo
+            # lo obligaba a adivinar, y adivinaba siempre hacia arriba.
             "sim_time": request.sim_time.isoformat(),
             "vehicle": request.vehicle,
             "zona_actual": request.zone_pickup,
-            "decisiones_registradas": len(JOURNAL),
-            "ultimas_decisiones": [
-                {"decision": r.decision, "binding_constraint": r.binding_constraint}
-                for r in JOURNAL.recent(10)
-            ],
+            "salario_de_reserva_calibrado_mxn_hr": STRATEGY.snapshot().reservation_wage_mxn_hr,
+            "ofertas_evaluadas_recientes": len(recientes),
+            "aceptadas_recientes": aceptadas,
+            "tasa_de_aceptacion_reciente_pct": (
+                round(100 * aceptadas / len(recientes), 1) if recientes else None
+            ),
+            "motivos_de_rechazo_recientes": motivos,
+            "shocks_activos": [s.describe() for s in SHOCKS.active(request.sim_time)],
         },
     )
 

@@ -108,8 +108,25 @@ from core.agent import reasons
 #: que maximiza el turno baja con ella.
 DEFAULT_RESERVATION_WAGE_MXN_HR = 250.0
 
+#: Cotas ABSOLUTAS: el ultimo cinturon, no el principal.
 MIN_RESERVATION_WAGE_MXN_HR = 60.0
 MAX_RESERVATION_WAGE_MXN_HR = 600.0
+
+#: Cuanto puede mover tier2 el umbral calibrado, en tanto por uno.
+#:
+#: Esto es el cinturon que de verdad protege. Las cotas absolutas de arriba
+#: dejaban pasar cualquier cosa entre 60 y 600, y el modelo -- que no ha visto
+#: los 12 turnos de calibracion -- propuso 120 con la justificacion de que
+#: "elevamos el salario de reserva". Su prosa decia subir y su numero bajaba a
+#: menos de la mitad; segun nuestro propio barrido eso cuesta cerca de un 30%
+#: de las ganancias del turno, con `degraded: false` y todo en verde.
+#:
+#: El reparto correcto es: el OPTIMO sale de medir 12 turnos held-out, y tier2
+#: solo lo modula por condiciones que la calibracion no puede conocer -- un
+#: surge en curso, lluvia, la hora. Con [0.75, 1.30] puede apretar o aflojar
+#: de verdad y no puede tirar el turno.
+MIN_STRATEGY_MULTIPLIER = 0.75
+MAX_STRATEGY_MULTIPLIER = 1.30
 
 #: Cada cuanto tiempo **de simulacion** se vuelve a consultar al modelo. En
 #: minutos de sim, no de reloj de pared: asi la cadencia de refresco es la
@@ -119,11 +136,20 @@ REFRESH_INTERVAL_SIM_MIN = 20.0
 #: Techo duro de la llamada al modelo. Corre en un hilo de fondo, pero un hilo
 #: colgado para siempre es una fuga: si no contesta en este tiempo, se trata
 #: como caida y se entra en degradado.
-MODEL_TIMEOUT_SECONDS = 15.0
+#:
+#: 30 y no 15 por medicion, no por cautela: la misma peticion tarda entre 2.7 y
+#: 21 segundos segun la carga del servicio. Con el techo en 15 caiamos en
+#: `TimeoutError` la mitad de las veces y el sistema se reportaba degradado sin
+#: estarlo. Un timeout corto acelera la señal de degradado, pero uno POR DEBAJO
+#: de la latencia real del modelo no la acelera: la vuelve mentira.
+MODEL_TIMEOUT_SECONDS = 30.0
 
 #: Modelo de la capa de estrategia. Nunca se llama dentro de la ventana de
 #: decision -- ver el docstring del modulo.
-MODEL_ID = "gemini-flash-latest"
+#: `gemini-flash-latest` devolvia HTTP 503 ("high demand") de forma sostenida
+#: y `gemini-2.5-flash` responde 404 para este proyecto aunque aparezca en la
+#: lista de modelos. Este contesta.
+MODEL_ID = "gemini-3.5-flash"
 
 #: Endpoint de la API de Gemini. La clave viaja en la cabecera
 #: `X-goog-api-key`, no en la URL: en la URL acabaria en los logs de acceso de
@@ -265,14 +291,29 @@ class GeminiAdvisor:
         self.model = model
         self.timeout_seconds = timeout_seconds
 
+    #: Se le pide un MULTIPLICADOR, no una cifra absoluta.
+    #:
+    #: Pidiendo el numero suelto, el modelo re-derivaba la economia entera sin
+    #: haber visto la calibracion, y su prosa podia contradecir su propio
+    #: numero sin que nada lo notara ("elevamos el umbral" mientras lo bajaba a
+    #: la mitad). Con un multiplicador, la unidad de la respuesta ES la
+    #: decision que se le pide -- subir, bajar o dejarlo igual -- y decir "1.15"
+    #: mientras se escribe "bajamos" es mucho mas dificil.
     _SYSTEM = (
-        "Eres la capa de estrategia de un agente repartidor. Ajustas el salario "
-        "de reserva (MXN/hora) que el motor de decision usa para aceptar o "
-        "rechazar pedidos. Nunca decides pedidos individuales.\n"
-        "Responde SOLO con un objeto JSON con las claves: "
-        '{"reservation_wage_mxn_hr": number, "target_zone": integer|null, '
-        '"reasoning": string de menos de 30 palabras, '
-        '"confidence": "low"|"medium"|"high"}'
+        "Eres la capa de estrategia de un agente repartidor en Monterrey. El "
+        "motor de decision ya tiene un salario de reserva CALIBRADO sobre 12 "
+        "turnos medidos; tu no lo reemplazas, solo lo ajustas por condiciones "
+        "que la calibracion no pudo conocer: surge en curso, lluvia, hora del "
+        "dia, como viene el turno. Nunca decides pedidos individuales.\n"
+        "Devuelve un multiplicador sobre ese umbral calibrado:\n"
+        "  >1 = mas exigente (hay buenas ofertas, conviene esperar)\n"
+        "  <1 = mas permisivo (escasean las ofertas, conviene aceptar mas)\n"
+        "  1  = sin cambio\n"
+        f"Limites: entre {MIN_STRATEGY_MULTIPLIER} y {MAX_STRATEGY_MULTIPLIER}.\n"
+        "Responde SOLO un objeto JSON con las claves: "
+        '{"wage_multiplier": number, "target_zone": integer|null, '
+        '"reasoning": string de menos de 30 palabras que explique el '
+        'multiplicador que elegiste, "confidence": "low"|"medium"|"high"}'
     )
 
     def propose(self, context: dict[str, Any]) -> ModelProposal:
@@ -360,13 +401,27 @@ def _proposal_from_text(text: str) -> ModelProposal:
     except (json.JSONDecodeError, TypeError) as exc:
         raise ModelUnavailable(f"respuesta del modelo ilegible: {exc}") from exc
 
-    if not isinstance(data, dict) or "reservation_wage_mxn_hr" not in data:
-        raise ModelUnavailable("respuesta del modelo sin reservation_wage_mxn_hr")
+    if not isinstance(data, dict):
+        raise ModelUnavailable("la respuesta del modelo no es un objeto")
 
-    try:
-        wage = float(data["reservation_wage_mxn_hr"])
-    except (TypeError, ValueError) as exc:
-        raise ModelUnavailable(f"reservation_wage_mxn_hr no numerico: {exc}") from exc
+    # Se acepta el multiplicador (lo que se le pide hoy) y tambien la cifra
+    # absoluta: los eventos `strategy_update` ya grabados en los turnos la
+    # llevan, y un replay tiene que poder reinyectarlos sin traducir nada.
+    if "wage_multiplier" in data:
+        try:
+            multiplicador = float(data["wage_multiplier"])
+        except (TypeError, ValueError) as exc:
+            raise ModelUnavailable(f"wage_multiplier no numerico: {exc}") from exc
+        wage = DEFAULT_RESERVATION_WAGE_MXN_HR * multiplicador
+    elif "reservation_wage_mxn_hr" in data:
+        try:
+            wage = float(data["reservation_wage_mxn_hr"])
+        except (TypeError, ValueError) as exc:
+            raise ModelUnavailable(f"reservation_wage_mxn_hr no numerico: {exc}") from exc
+    else:
+        raise ModelUnavailable(
+            "respuesta del modelo sin wage_multiplier ni reservation_wage_mxn_hr"
+        )
 
     zone = data.get("target_zone")
     confidence = data.get("confidence")
@@ -598,7 +653,9 @@ class StrategyLayer:
         que no hay forma de que el modelo mueva el umbral por debajo. Se sale
         con `resume_live()`.
         """
-        wage, _ = _clamp_wage(float(event.get("reservation_wage_mxn_hr", DEFAULT_RESERVATION_WAGE_MXN_HR)))
+        wage, _ = _clamp_absolute(
+            float(event.get("reservation_wage_mxn_hr", DEFAULT_RESERVATION_WAGE_MXN_HR))
+        )
         zone = event.get("target_zone")
         confidence = event.get("confidence")
 
@@ -664,7 +721,29 @@ class StrategyLayer:
 
 
 def _clamp_wage(value: float) -> tuple[float, bool]:
-    """Recorta a las cotas. Devuelve (valor, se_recorto)."""
+    """Recorta una PROPUESTA del modelo. Devuelve (valor, se_recorto).
+
+    Dos cinturones, y el que hace el trabajo es el relativo: tier2 puede mover
+    el umbral CALIBRADO dentro de una banda, no proponer cualquier cifra. El
+    optimo se midio sobre 12 turnos held-out y el modelo no ha visto ninguno;
+    dejarle reescribirlo entero es darle a un asesor la llave de la caja.
+    """
+    banda_baja = DEFAULT_RESERVATION_WAGE_MXN_HR * MIN_STRATEGY_MULTIPLIER
+    banda_alta = DEFAULT_RESERVATION_WAGE_MXN_HR * MAX_STRATEGY_MULTIPLIER
+    clamped = max(banda_baja, min(banda_alta, value))
+    return _clamp_absolute(clamped)[0], clamped != value
+
+
+def _clamp_absolute(value: float) -> tuple[float, bool]:
+    """Recorta solo a las cotas duras, sin la banda relativa.
+
+    Es lo que se aplica a un valor GRABADO. La banda relativa vigila lo que el
+    modelo propone; un valor que ya ocurrio en un turno no es una propuesta, es
+    un hecho, y recortarlo al reinyectarlo haria que el replay produjera
+    decisiones distintas de las que se grabaron -- justo lo que el diff del
+    protocolo (seccion 6) existe para detectar. Las cotas duras se mantienen
+    porque un log corrupto tampoco deberia poder meter un umbral absurdo.
+    """
     clamped = max(MIN_RESERVATION_WAGE_MXN_HR, min(MAX_RESERVATION_WAGE_MXN_HR, value))
     return clamped, clamped != value
 
