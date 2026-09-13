@@ -4,6 +4,7 @@ import { Map } from "@/components/Map";
 import { Metrics } from "@/components/Metrics";
 import { useSimulation } from "@/hooks/useSimulation";
 import DashboardFeed from "@/components/DashboardFeed";
+import FinancialROI from "@/components/FinancialROI";
 
 export default function Home() {
   const { snapshot, connected } = useSimulation();
@@ -73,6 +74,14 @@ export default function Home() {
           <h2 className="mb-2 text-sm font-medium text-gray-500">Decisiones</h2>
           <DashboardFeed events={activeEvents} />
         </div>
+      </section>
+      <section className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-3">
+        {/* Tu código actual del Mapa y Decisiones... */}
+      </section>
+
+      {/* NUEVA SECCIÓN FINANCIERA */}
+      <section className="mt-4">
+        <FinancialROI />
       </section>
     </div>
   );
