@@ -26,6 +26,8 @@ import type { FilaResultado, Resultados } from "@/lib/types";
 
 interface ComparacionProps {
   resultados: Resultados | null;
+  /** El backend no contestó. Distinto de "contestó y no hay tabla". */
+  error?: string | null;
 }
 
 /** Rejilla compartida por la cabecera y todas las filas. */
@@ -40,16 +42,25 @@ function conSigno(pct: number): string {
   return `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
 }
 
-export default function Comparacion({ resultados }: ComparacionProps) {
-  if (!resultados?.disponible || resultados.filas.length === 0) {
+export default function Comparacion({ resultados, error }: ComparacionProps) {
+  if (error) {
     return (
-      <section className="flex min-h-0 flex-col">
-        <SectionLabel>Cuánto maximiza</SectionLabel>
-        <div className="flex min-h-0 flex-1 items-center border border-line bg-panel px-3 text-[11px] leading-relaxed text-muted">
-          Sin tabla de resultados todavía. Generarla con{" "}
-          <code className="mx-1 font-mono">python scripts/run_evaluation.py</code>
-        </div>
-      </section>
+      <Vacio>
+        No se pudo leer la comparación: {error}.
+      </Vacio>
+    );
+  }
+
+  if (resultados === null) {
+    return <Vacio>Leyendo la tabla de resultados…</Vacio>;
+  }
+
+  if (!resultados.disponible || resultados.filas.length === 0) {
+    return (
+      <Vacio>
+        Sin tabla de resultados todavía. Generarla con{" "}
+        <code className="font-mono text-text">python scripts/run_evaluation.py</code>
+      </Vacio>
     );
   }
 
@@ -86,7 +97,7 @@ export default function Comparacion({ resultados }: ComparacionProps) {
         </span>
       </SectionLabel>
 
-      <div className="flex min-h-0 flex-1 flex-col justify-between border border-line bg-panel px-3 py-2">
+      <div className="scroll-consola flex min-h-0 flex-1 flex-col justify-between overflow-y-auto border border-line bg-panel px-3 py-2">
         <div>
           {/* Las unidades se dicen una vez, arriba, y no se repiten en cada
               fila: "440" en ámbar no significa nada sin esta cabecera, y
@@ -196,6 +207,22 @@ function Barra({
         {pesos(fila.mean_earnings_mxn)}
       </span>
     </li>
+  );
+}
+
+/**
+ * Los tres estados en que este panel no tiene barras que dibujar. Alineado
+ * arriba y no centrado: centrado en una caja alta deja el texto flotando en
+ * medio de la nada y parece un fallo de maquetación.
+ */
+function Vacio({ children }: { children: React.ReactNode }) {
+  return (
+    <section className="flex min-h-0 flex-col">
+      <SectionLabel>Cuánto maximiza</SectionLabel>
+      <div className="min-h-0 flex-1 border border-line bg-panel px-3 py-2.5 text-[11px] leading-[1.6] text-muted">
+        {children}
+      </div>
+    </section>
   );
 }
 

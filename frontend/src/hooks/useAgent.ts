@@ -214,21 +214,38 @@ export async function loadReplay(seed: number): Promise<DecisionEvent[]> {
  */
 export function useResults() {
   const [resultados, setResultados] = useState<Resultados | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelado = false;
     fetch(`${API_URL}/results`, { cache: "no-store" })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: Resultados | null) => {
-        if (!cancelado) setResultados(data);
+      .then(async (res) => {
+        if (cancelado) return;
+        // Un 404 y una tabla sin generar NO son lo mismo, y el panel tiene
+        // que decir cuál de las dos es. Un 404 aquí significa casi siempre
+        // un backend arrancado antes de que /results existiera, y un panel
+        // que en ese caso diga "corre la evaluación" manda a reejecutar algo
+        // que ya está hecho.
+        if (!res.ok) {
+          setError(
+            res.status === 404
+              ? "este backend no expone /results — reinicia uvicorn"
+              : `el backend respondió ${res.status}`,
+          );
+          return;
+        }
+        setResultados((await res.json()) as Resultados);
+        setError(null);
       })
-      .catch(() => {
-        if (!cancelado) setResultados(null);
+      .catch((err: unknown) => {
+        if (!cancelado) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
       });
     return () => {
       cancelado = true;
     };
   }, []);
 
-  return resultados;
+  return { resultados, error };
 }

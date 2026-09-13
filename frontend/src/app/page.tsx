@@ -51,7 +51,7 @@ const TOPE_LATENCIA_MS = 50;
  */
 export default function Home() {
   const { decisions, status, replays, connected, error } = useAgent(50);
-  const resultados = useResults();
+  const { resultados, error: errorResultados } = useResults();
   const [replayEvents, setReplayEvents] = useState<DecisionEvent[] | null>(null);
   const [replaySeed, setReplaySeed] = useState<number | null>(null);
 
@@ -138,8 +138,8 @@ export default function Home() {
           antemano— pero es la respuesta a "¿cuánto mejora esto?", que es la
           pregunta con la que se juzga el proyecto. Va a la izquierda porque es
           lo primero que se lee después del mapa. */}
-      <footer className="grid shrink-0 gap-3 md:grid-cols-2 lg:min-h-52 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,0.95fr)_minmax(0,1.15fr)_12rem]">
-        <Comparacion resultados={resultados} />
+      <footer className="grid shrink-0 gap-3 md:grid-cols-2 lg:h-52 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,0.95fr)_minmax(0,1.15fr)_12rem]">
+        <Comparacion resultados={resultados} error={errorResultados} />
         <Bloqueos decisions={visibles} />
         <Estrategia status={status} enVivo={enVivo} />
         <Replays
