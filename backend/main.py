@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.decide import router as decide_router
+from api.replay import router as replay_router
 from api.routes import router as rest_router
 from api.sockets import router as ws_router
 from core.agent.strategy import STRATEGY, ClaudeAdvisor
@@ -41,6 +42,7 @@ app.add_middleware(
 )
 
 app.include_router(decide_router)
+app.include_router(replay_router)
 app.include_router(rest_router)
 app.include_router(ws_router)
 
