@@ -85,7 +85,13 @@ function FeedRow({ decision }: { decision: DecisionEvent }) {
       </p>
 
       <p className="tabular mt-1.5 font-mono text-[11px] text-muted opacity-60">
-        {decision.latency_ms.toFixed(2)} ms · {decision.tier}
+        {/* El arnes que graba un turno NO mide latencia: la escribe como 0.0
+            porque quien la mide es /decide. Pintar "0.00 ms" seria un numero
+            inventado con otro nombre, justo lo que este dashboard evita. */}
+        {decision.latency_ms > 0
+          ? `${decision.latency_ms.toFixed(2)} ms`
+          : "latencia no medida"}{" "}
+        · {decision.tier}
         {decision.degraded && <span className="text-safety"> · degradado</span>}
       </p>
     </li>

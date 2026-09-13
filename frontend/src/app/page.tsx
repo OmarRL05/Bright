@@ -59,7 +59,11 @@ export default function Home() {
 
         <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs">
           <span className="text-muted">
-            {enVivo ? "Decisiones en vivo" : `Turno grabado, seed ${replaySeed}`}
+            {/* "En vivo" hacia pensar que hay un turno corriendo de fondo. No
+                lo hay: el feed solo se mueve cuando algo postea a /decide. */}
+            {enVivo
+              ? "Últimas decisiones del servidor"
+              : `Turno grabado, seed ${replaySeed}`}
           </span>
           {status?.degraded && (
             <span className="border border-safety px-2 py-0.5 font-medium text-safety">
@@ -79,7 +83,7 @@ export default function Home() {
         </p>
       )}
 
-      <InstrumentStrip decisions={visibles} status={status} />
+      <InstrumentStrip decisions={visibles} status={status} enVivo={enVivo} />
 
       <main className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_26rem]">
         <div className="flex flex-col gap-4">
@@ -111,7 +115,7 @@ export default function Home() {
       </main>
 
       <footer className="mt-4 grid gap-4 md:grid-cols-2">
-        <Strategy status={status} />
+        <Strategy status={status} enVivo={enVivo} />
         <Replays
           replays={replays}
           activo={replaySeed}
@@ -142,19 +146,25 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 function InstrumentStrip({
   decisions,
   status,
+  enVivo,
 }: {
   decisions: DecisionEvent[];
   status: AgentStatus | null;
+  enVivo: boolean;
 }) {
   const stats = useMemo(() => {
     const total = decisions.length;
     const aceptadas = decisions.filter((d) => d.decision === "ACCEPT").length;
     const latencias = decisions.map((d) => d.latency_ms);
+    const medidas = latencias.filter((ms) => ms > 0);
     return {
       total,
       aceptadas,
       aceptacion: total ? (aceptadas / total) * 100 : 0,
-      latenciaMax: latencias.length ? Math.max(...latencias) : 0,
+      // Solo cuentan las latencias MEDIDAS. Un turno grabado las trae en 0
+      // porque el arnés no las mide; promediarlas daría "0.00 ms", que no es
+      // una marca excelente sino un dato que no existe.
+      latenciaMax: medidas.length ? Math.max(...medidas) : null,
     };
   }, [decisions]);
 
@@ -171,10 +181,16 @@ function InstrumentStrip({
         nota="de las ofertas que llegaron"
       />
       <Reading
-        valor={`${stats.latenciaMax.toFixed(2)} ms`}
+        valor={stats.latenciaMax === null ? "—" : `${stats.latenciaMax.toFixed(2)} ms`}
         etiqueta="Peor latencia"
-        nota="tope del protocolo: 50 ms"
-        bien={stats.latenciaMax < 50}
+        nota={
+          stats.latenciaMax === null
+            ? enVivo
+              ? "sin decisiones medidas todavía"
+              : "no se mide al grabar un turno"
+            : "tope del protocolo: 50 ms"
+        }
+        bien={stats.latenciaMax === null ? undefined : stats.latenciaMax < 50}
       />
       <Reading
         valor={status ? `$${status.reservation_wage_mxn_hr.toFixed(0)}` : "—"}
@@ -260,12 +276,24 @@ function Blocking({ decisions }: { decisions: DecisionEvent[] }) {
   );
 }
 
-function Strategy({ status }: { status: AgentStatus | null }) {
+function Strategy({
+  status,
+  enVivo,
+}: {
+  status: AgentStatus | null;
+  enVivo: boolean;
+}) {
   if (!status) return null;
 
+  // Este panel describe el SERVIDOR, siempre. Cuando se mira un turno
+  // grabado, el mapa y el libro hablan del turno y este no: son dos sujetos
+  // distintos uno al lado del otro, y sin decirlo se leen como uno solo.
   return (
-    <section>
-      <SectionLabel>Capa de estrategia</SectionLabel>
+    <section className={enVivo ? "" : "opacity-60"}>
+      <SectionLabel>
+        Capa de estrategia
+        {!enVivo && " — estado del servidor, no del turno que estás viendo"}
+      </SectionLabel>
       <div className="border border-line bg-panel px-4 py-3 text-xs">
         <dl className="grid grid-cols-3 gap-x-4 gap-y-1">
           <Dato etiqueta="Modelo" valor={status.advisor} />
