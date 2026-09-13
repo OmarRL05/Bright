@@ -20,18 +20,25 @@ app = FastAPI(title="The Courier - HackMTY 2026")
 
 @app.on_event("startup")
 async def _connect_strategy_layer() -> None:
-    """Conecta la capa de estrategia (tier2) si hay credencial en el entorno.
+    """Conecta la capa de estrategia (tier2) SOLO si hay credencial al arrancar.
 
-    Sin esto, STRATEGY se queda con NullAdvisor: el sistema decide igual de
-    bien, pero `degraded` nunca es verdad porque no hay modelo que se caiga, y
-    el requisito 7 del protocolo queda sin demostrar.
+    La distincion importa y es facil de perder: `strategy.py` separa a
+    proposito "no hay modelo configurado" (NullAdvisor, `degraded=False`) de
+    "el modelo se cayo" (`degraded=True`). Conectar ClaudeAdvisor sin tener
+    credencial borra esa distincion: el primer refresco falla y **todas** las
+    respuestas salen con `degraded: true` desde el primer ping.
 
-    Se conecta el advisor aunque la key no este puesta ahora mismo: la key se
-    lee en CADA llamada, no aqui, asi que exportarla despues de arrancar el
-    proceso tambien funciona -- y quitarla a media corrida dispara el modo
-    degradado, que es exactamente lo que los jueces hacen.
+    Eso tiene dos costos concretos. Un juez lee `degraded: true` en cada
+    respuesta como "este sistema esta operando roto", que es lo contrario de lo
+    que el flag quiere decir. Y el ensayo del requisito 7 se pierde: no se
+    puede demostrar la transicion sano -> degradado si arranca degradado.
+
+    La credencial se sigue leyendo en CADA llamada, no aqui, asi que el ensayo
+    funciona tal como lo describe el protocolo: arrancar con la key, quitarla a
+    media corrida, verla degradarse, restaurarla y verla recuperarse.
     """
-    STRATEGY.use_advisor(ClaudeAdvisor())
+    if os.getenv("ANTHROPIC_API_KEY"):
+        STRATEGY.use_advisor(ClaudeAdvisor())
 
 app.add_middleware(
     CORSMiddleware,

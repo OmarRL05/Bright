@@ -57,7 +57,7 @@ from core.agent.journal import (
     in_flight_totals,
     queue_offset_min,
 )
-from core.agent.safety import combine, evaluate_safety_full, profile_for
+from core.agent.safety import SafetyVerdict, combine, evaluate_safety_full, profile_for
 from core.agent.strategy import STRATEGY
 
 router = APIRouter(tags=["decide"])
@@ -181,8 +181,24 @@ async def decide(request: DecideRequest, background: BackgroundTasks) -> DecideR
         )
     except Exception as exc:  # noqa: BLE001 -- deliberado, ver docstring
         decision, binding_constraint = "SKIP", None
-        reason = reasons.cap_words(f"error interno al evaluar la oferta: {exc}")
+        reason = reasons.internal_error()
         economics_breakdown = None
+        # Se registra igual, con un veredicto vacio: si no, un juez que
+        # pregunte "¿por que saltaste esa?" justo despues de un error interno
+        # recibe un 404, que parece que perdimos la decision en vez de que la
+        # tomamos mal. El texto de la excepcion vive en el journal, no en el
+        # `reason` que se lee en voz alta.
+        record = DecisionRecord(
+            order=request,
+            overrides=request.courier_state_overrides,
+            verdict=SafetyVerdict(),
+            decision=decision,
+            reason=reason,
+            binding_constraint=None,
+            latency_ms=0.0,
+            degraded=strategy.degraded,
+            economics={"error": f"{type(exc).__name__}: {exc}"},
+        )
 
     latency_ms = (time.perf_counter() - t0) * 1000
 
