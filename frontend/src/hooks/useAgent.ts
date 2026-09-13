@@ -1,7 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { AgentStatus, DecisionEvent, ReplaySummary, ShockInfo } from "@/lib/types";
+import type {
+  AgentStatus,
+  DecisionEvent,
+  ReplaySummary,
+  Resultados,
+  ShockInfo,
+} from "@/lib/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -100,18 +106,11 @@ export function useShocks(pollMs = POLL_MS) {
 }
 
 /**
- * Geometría real sobre calles (GET /route) para cada par zona→zona en
- * `pairs`, con caché en memoria del lado del cliente además del caché por
- * proceso que ya tiene el backend -- no hay razón para volver a pedir un
- * par que ya se resolvió, ni aunque cambie qué decisiones se muestran.
- *
- * Un valor `null` significa "ya se pidió y no hay ruta real disponible"
- * (el `.graphml` no está descargado, o esas zonas no tienen camino) -- lo
- * distingue de "todavía no se pidió" (ausente del objeto) para que quien
- * dibuja pueda caer a línea recta sin reintentar en cada render.
- */
-/**
  * Geometría de calle real por par de zonas, de GET /route.
+ *
+ * Hay caché en memoria del lado del cliente además de la del backend: no hay
+ * razón para volver a pedir un par ya resuelto, ni aunque cambie qué
+ * decisiones se muestran. Ausente del objeto = todavía no se pidió.
  *
  * `null` significa "se preguntó y no hay" (503: ni caché ni OSRM), y el mapa
  * lo rotula como línea recta. Es una distinción que vale la pena mantener en
@@ -203,4 +202,33 @@ export async function loadReplay(seed: number): Promise<DecisionEvent[]> {
       ...zonasPorOrden.get(evento.order_id as string),
     }))
     .reverse();
+}
+
+/**
+ * La tabla de resultados medida (GET /results).
+ *
+ * Se pide UNA vez, no en el poll: son medias sobre 12 turnos held-out
+ * guardadas en disco, no algo que cambie mientras la consola está abierta.
+ * Meterla en el ciclo de 1.5 s daría la impresión contraria — y esa
+ * impresión es justo la que este panel tiene que evitar.
+ */
+export function useResults() {
+  const [resultados, setResultados] = useState<Resultados | null>(null);
+
+  useEffect(() => {
+    let cancelado = false;
+    fetch(`${API_URL}/results`, { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: Resultados | null) => {
+        if (!cancelado) setResultados(data);
+      })
+      .catch(() => {
+        if (!cancelado) setResultados(null);
+      });
+    return () => {
+      cancelado = true;
+    };
+  }, []);
+
+  return resultados;
 }

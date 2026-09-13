@@ -193,3 +193,63 @@ export interface SimulationSnapshot {
   agent: CourierState;
   baseline: CourierState;
 }
+
+// ---------------------------------------------------------------------------
+// Tabla de resultados (GET /results)
+// ---------------------------------------------------------------------------
+
+/*
+ * Espejo de core.evaluation.report. Las comparaciones vienen CALCULADAS del
+ * backend a proposito: "gana un 29.7% mas" depende por completo de contra que
+ * se compara, y esa eleccion es de evaluacion, no de presentacion. Si el
+ * dashboard la tomara por su cuenta, la pantalla, la lamina y el documento
+ * podrian citar tres numeros distintos, todos ciertos y ninguno el mismo.
+ */
+
+/** Una fila de results_table.csv. */
+export interface FilaResultado {
+  policy: string;
+  etiqueta: string;
+  mean_earnings_mxn: number;
+  median_earnings_mxn: number;
+  mean_mxn_per_hr: number;
+  accept_rate_pct: number;
+  orders_completed: number;
+  deadhead_pct_of_km: number;
+  deadline_misses: number;
+  safety_violations: number;
+  /** Nuestro agente: la fila que se resalta. */
+  propia: boolean;
+  /** La cota superior clarividente. Se dibuja como límite, no como rival. */
+  techo: boolean;
+}
+
+export interface Comparacion {
+  contra: string;
+  etiqueta_contra: string;
+  /** Qué aísla esta comparación. */
+  pregunta: string;
+  /** La que encabeza: misma seguridad, sin nuestra capa de posicionamiento. */
+  titular: boolean;
+  ganancia_propia_mxn: number;
+  ganancia_contra_mxn: number;
+  delta_mxn: number;
+  delta_pct: number;
+  violaciones_contra: number;
+}
+
+export interface Resultados {
+  disponible: boolean;
+  /** Comentarios `#` del CSV: llevan la regla de seeds disjuntas. */
+  notas: string[];
+  filas: FilaResultado[];
+  comparaciones: Comparacion[];
+  captura_del_techo_pct: number | null;
+  meta: {
+    shifts?: number;
+    shift_hours?: number;
+    vehicle?: string;
+    conjunto?: string;
+    generated_at?: string;
+  };
+}

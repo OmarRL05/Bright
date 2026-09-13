@@ -1,0 +1,36 @@
+{
+  "shifts": 12,
+  "shift_hours": 8.0,
+  "vehicle": "moto",
+  "start_zone": 0,
+  "conjunto": "REPORTE (held-out)",
+  "reporting_seeds": [
+    101,
+    113,
+    127,
+    131,
+    149,
+    151,
+    163,
+    173,
+    181,
+    191,
+    199,
+    211
+  ],
+  "tuning_seeds": [
+    11,
+    23,
+    37,
+    41,
+    59,
+    67,
+    71,
+    83,
+    89,
+    97,
+    103,
+    109
+  ],
+  "generated_at": "2026-09-13T11:57:01+00:00"
+}

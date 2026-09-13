@@ -2,8 +2,9 @@
 
 import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
+import Comparacion from "@/components/Comparacion";
 import DashboardFeed from "@/components/DashboardFeed";
-import { loadReplay, useAgent } from "@/hooks/useAgent";
+import { loadReplay, useAgent, useResults } from "@/hooks/useAgent";
 import {
   CONSTRAINT_LABELS,
   isSafetyConstraint,
@@ -50,6 +51,7 @@ const TOPE_LATENCIA_MS = 50;
  */
 export default function Home() {
   const { decisions, status, replays, connected, error } = useAgent(50);
+  const resultados = useResults();
   const [replayEvents, setReplayEvents] = useState<DecisionEvent[] | null>(null);
   const [replaySeed, setReplaySeed] = useState<number | null>(null);
 
@@ -128,9 +130,16 @@ export default function Home() {
         </section>
       </main>
 
-      {/* Los tres resúmenes del turno, a una altura fija: nada de esto crece
-          tanto como para empujar al mapa, y nada queda por debajo del pliegue. */}
-      <footer className="grid shrink-0 gap-3 md:grid-cols-2 lg:h-40 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)_13rem]">
+      {/* Los cuatro resúmenes, a una altura fija: nada de esto crece tanto como
+          para empujar al mapa, y nada queda por debajo del pliegue.
+
+          `Comparacion` va primero a propósito. Es lo único del pie que no
+          habla del turno que se está viendo —son 12 turnos held-out medidos de
+          antemano— pero es la respuesta a "¿cuánto mejora esto?", que es la
+          pregunta con la que se juzga el proyecto. Va a la izquierda porque es
+          lo primero que se lee después del mapa. */}
+      <footer className="grid shrink-0 gap-3 md:grid-cols-2 lg:min-h-52 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,0.95fr)_minmax(0,1.15fr)_12rem]">
+        <Comparacion resultados={resultados} />
         <Bloqueos decisions={visibles} />
         <Estrategia status={status} enVivo={enVivo} />
         <Replays
