@@ -13,6 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 Vehicle = Literal["moto", "car", "bike"]
 Decision = Literal["ACCEPT", "SKIP"]
+#: Los cuatro del contrato oficial (event_log_schema.json, evento `shock`).
+ShockType = Literal["surge", "closure", "rain", "delay"]
 BindingConstraint = Literal[
     "flagged_zone_night",
     "mandatory_break",
@@ -95,6 +97,59 @@ class StatusResponse(BaseModel):
     decisions_recorded: int
 
 
+class ShockRequest(BaseModel):
+    """Espejo del evento `shock` (event_log_schema.json).
+
+    Los jueces pueden inyectar shocks en vivo (evaluation_protocol.md seccion
+    5), asi que el body que se acepta es el MISMO objeto que el log emite: si
+    lo copian de un log grabado y lo pegan aqui, tiene que entrar sin
+    traducirlo.
+
+    `extra="ignore"` por la misma razon que en DecideRequest: un `event:
+    "shock"` de mas -- que es justo lo que trae una linea copiada del log --
+    no puede ser un 422.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    shock_type: ShockType
+    sim_time: datetime | None = None
+    zone: int | None = None
+    multiplier: float | None = None
+    road: str | None = None
+    order_id: str | None = None
+    slip_min: float | None = None
+    duration_min: float | None = None
+
+
+class ShockResponse(BaseModel):
+    """Acuse de recibo de una inyeccion.
+
+    Devuelve el evento tal como quedo REGISTRADO, no como llego: si el
+    multiplicador se recorto o la duracion se completo con el default, el juez
+    lo ve en la respuesta en vez de descubrirlo despues en el log.
+    """
+
+    accepted: bool
+    shock: dict[str, Any]
+    active_shocks: int
+    expires_at: datetime | None = None
+    note: str
+
+
+class ActiveShocksResponse(BaseModel):
+    """Que shocks estan mordiendo ahora mismo.
+
+    Contesta "what would it do if a surge hit right now?" sin re-correr nada:
+    los eventos vigentes, en el formato oficial, listos para leerse en voz
+    alta o para pegarse en un log de replay.
+    """
+
+    active: list[dict[str, Any]]
+    history: list[dict[str, Any]]
+    evaluated_at: datetime | None = None
+
+
 class DecideResponse(BaseModel):
     order_id: str
     decision: Decision
@@ -104,6 +159,11 @@ class DecideResponse(BaseModel):
     tier: Literal["tier1", "tier2"] = "tier1"
     degraded: bool = False
     economics: EconomicsBreakdown | None = None
+    #: Shocks vigentes que movieron los numeros de ESTA decision, en corto.
+    #: Campo extra al contrato oficial (que permite extras): es lo que hace
+    #: visible en la respuesta que el shock inyectado en vivo entro, sin
+    #: tener que abrir el log a media demo.
+    shocks_applied: list[str] = Field(default_factory=list)
 
 
 class AlternativeConsidered(BaseModel):
