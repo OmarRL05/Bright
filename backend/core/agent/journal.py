@@ -175,6 +175,10 @@ class DecisionRecord:
     economics: dict[str, Any] | None = None
     #: Parametros de estrategia vigentes (tier2). Los llena strategy.py.
     strategy: dict[str, Any] | None = None
+    #: Shocks vigentes al decidir y como movieron los numeros (core.agent.shocks).
+    #: Es lo que contesta "¿por que esta oferta si y la de hace un minuto no?"
+    #: despues de que un juez inyecto un surge en vivo.
+    shocks: dict[str, Any] | None = None
 
     @property
     def order_id(self) -> str:
@@ -419,6 +423,7 @@ def _inputs(record: DecisionRecord) -> dict[str, Any]:
             "shift_end_safety_margin_min": safety.SHIFT_END_SAFETY_MARGIN_MIN,
         },
         "strategy": record.strategy,
+        "shocks": record.shocks,
         "economics": record.economics,
         "latency_ms": round(record.latency_ms, 3),
         "tier": record.tier,
