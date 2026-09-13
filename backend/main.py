@@ -9,6 +9,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.decide import router as decide_router
 from api.routes import router as rest_router
 from api.sockets import router as ws_router
 
@@ -22,6 +23,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(decide_router)
 app.include_router(rest_router)
 app.include_router(ws_router)
 
