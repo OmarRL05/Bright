@@ -206,11 +206,18 @@ class GreedyRate:
 class OurAgent:
     """El sistema real: gate de seguridad + economia, en ese orden.
 
-    Mismo codigo que `POST /decide`. `reservation_wage_mxn_hr` se fija
-    explicito en vez de leerlo de `STRATEGY`, por dos razones: el arnes no
-    tiene capa tier2 corriendo, y una corrida de resultados tiene que ser
-    reproducible -- si el umbral dependiera de lo que un modelo publico a
-    media corrida, dos ejecuciones del mismo seed podrian no coincidir.
+    **No reimplementa la decision: llama a la del endpoint.** Es la unica forma
+    de que la tabla de resultados describa el sistema que los jueces van a
+    probar. Tener aqui una copia "equivalente" ya costo caro una vez: mientras
+    la tenia, esta politica ignoraba el efecto de los shocks sobre el tiempo y
+    la distancia, asi que el arnes medía un agente que no existia -- y fue el
+    diff de replay quien lo delato, no una revision del codigo.
+
+    `reservation_wage_mxn_hr` se fija explicito en vez de leerlo de `STRATEGY`
+    por dos razones: el arnes no tiene capa tier2 corriendo, y una corrida de
+    resultados tiene que ser reproducible -- si el umbral dependiera de lo que
+    un modelo publico a media corrida, dos ejecuciones del mismo seed podrian
+    no coincidir.
     """
 
     name = "OurAgent"
@@ -222,52 +229,20 @@ class OurAgent:
             else DEFAULT_RESERVATION_WAGE_MXN_HR
         )
 
-    def decide(self, request, runner, state, sim_time) -> bool:
-        total_min, _, _ = runner.order_timing(request, state, sim_time)
+    def decide(self, request, runner, state, sim_time) -> PolicyDecision:
+        """`record=False` porque el arnes corre decenas de miles de decisiones
+        de calibracion y no tiene por que llenar la bitacora de
+        explain_decision con ellas."""
+        from api.decide import decide_request
 
-        verdict = evaluate_safety_full(
-            vehicle=request.vehicle,
-            weight_kg=request.weight_kg,
-            volume_liters=request.volume_liters,
-            sim_time=sim_time,
-            zone_dropoff=request.zone_dropoff,
-            continuous_riding_min=state.continuous_riding_min,
-            order_total_time_min=total_min,
-            shift_end_time=runner.config.shift_end_time,
-            in_flight_weight_kg=sum(o["weight_kg"] for o in state.in_flight),
-            in_flight_volume_liters=sum(o["volume_liters"] for o in state.in_flight),
-            last_break_end_time=state.last_break_end_time,
-            queue_offset_min=runner.queue_offset_min(state, sim_time),
-        )
-
-        economics = evaluate_economics(
-            base_pay_mxn=request.base_pay_mxn,
-            est_tip_mxn=request.est_tip_mxn,
-            surge_multiplier=request.surge_multiplier,
-            total_time_min=total_min,
-            deadhead_km=request.distance_pickup_km,
-            delivery_km=request.distance_delivery_km,
-            profile=runner.config.profile,
-            zone_dropoff=request.zone_dropoff,
+        response = decide_request(
+            request,
             reservation_wage_mxn_hr=self.reservation_wage_mxn_hr,
+            record=False,
         )
-
-        economic_accept = economics.adjusted_rate_mxn_hr >= economics.reservation_wage_mxn_hr
-        decision, reason, binding = combine(
-            verdict,
-            economic_accept=economic_accept,
-            economic_reason=(
-                reasons.accepted(economics.adjusted_rate_mxn_hr, economics.reservation_wage_mxn_hr)
-                if economic_accept
-                else reasons.reservation_wage(
-                    economics.adjusted_rate_mxn_hr,
-                    economics.reservation_wage_mxn_hr,
-                    economics.deadhead_km,
-                )
-            ),
-            economic_binding=None if economic_accept else "reservation_wage",
+        return PolicyDecision(
+            response.decision == "ACCEPT", response.reason, response.binding_constraint
         )
-        return PolicyDecision(decision == "ACCEPT", reason, binding)
 
 
 class GreedyRateSafe(OurAgent):

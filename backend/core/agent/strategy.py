@@ -341,6 +341,10 @@ class StrategyLayer:
         self._last_refresh_sim_time: datetime | None = None
         self._worker: threading.Thread | None = None
 
+        # En modo replay los parametros quedan CLAVADOS: `maybe_refresh` no
+        # despacha nada. Ver `apply_recorded`.
+        self._replay_pinned = False
+
     # -- lectura del fast path --------------------------------------------
 
     def snapshot(self) -> StrategyParams:
@@ -383,6 +387,12 @@ class StrategyLayer:
             # Sin modelo detras no hay nada que preguntar, y sobre todo no hay
             # nada que pueda fallar: dispararlo igual marcaria `degraded` por
             # una caida que no ocurrio (ver NullAdvisor).
+            return False
+
+        if self._replay_pinned:
+            # Reproduciendo un turno grabado: los parametros son los del log y
+            # no se tocan. Es lo que hace que el diff de decisiones mida
+            # nuestro determinismo y no el del modelo.
             return False
 
         if sim_time is not None and self._last_refresh_sim_time is not None:
@@ -498,13 +508,31 @@ class StrategyLayer:
 
     # -- replay -------------------------------------------------------------
 
-    def apply_recorded(self, event: dict[str, Any]) -> StrategyParams:
-        """Fija los parametros desde un evento `strategy_update` grabado.
+    @property
+    def replay_pinned(self) -> bool:
+        """True mientras los parametros estan clavados por un replay."""
+        return self._replay_pinned
 
-        Es la respuesta al check de replay del protocolo (seccion 6): al
-        reproducir un turno no se vuelve a llamar al modelo, se reinyecta lo
-        que el modelo dijo entonces. Asi el no-determinismo del modelo no puede
-        mover ni una decision del fast path.
+    def apply_recorded(self, event: dict[str, Any]) -> StrategyParams:
+        """Fija los parametros desde un evento `strategy_update` grabado y
+        **entra en modo replay**.
+
+        Es la respuesta al check de replay del protocolo (seccion 6):
+
+            "Strategy-layer parameters may vary slightly from model
+             non-determinism, provided no fast-path decision changes as a
+             result."
+
+        Esa licencia no nos sirve tal cual, porque en nuestro diseño el
+        parametro de tier2 **si** cambia decisiones: `reservation_wage_mxn_hr`
+        es el umbral contra el que se compara la tasa efectiva. Si el modelo
+        publicara una revision nueva a media reproduccion, el diff saldria
+        distinto y no seria por un bug sino por diseño.
+
+        Por eso reinyectar no basta con fijar el valor: ademas **clava** la
+        capa. Mientras dure el replay, `maybe_refresh` no despacha nada, asi
+        que no hay forma de que el modelo mueva el umbral por debajo. Se sale
+        con `resume_live()`.
         """
         wage, _ = _clamp_wage(float(event.get("reservation_wage_mxn_hr", DEFAULT_RESERVATION_WAGE_MXN_HR)))
         zone = event.get("target_zone")
@@ -521,7 +549,18 @@ class StrategyLayer:
                 source="recorded",
             )
         )
+        self._replay_pinned = True
         return self._params
+
+    def resume_live(self) -> None:
+        """Sale del modo replay: tier2 vuelve a poder publicar parametros.
+
+        No restaura los parametros anteriores a proposito -- los del log son
+        tan validos como cualquier otro punto de partida, y volver atras
+        inventaria una revision que nunca existio.
+        """
+        self._replay_pinned = False
+        self._last_refresh_sim_time = None
 
     # -- event log ---------------------------------------------------------
 

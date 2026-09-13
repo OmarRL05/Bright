@@ -137,6 +137,15 @@ class SimulationEngine:
         # zone_id -> (multiplier, minuto en que expira). Ver SURGE_DURATION_MIN.
         self._active_surges: dict[int, tuple[float, float]] = {}
 
+        # Cuando quien corre el turno conoce la posicion del repartidor, el
+        # evento `order_offered` lo emite EL, no este generador: el deadhead
+        # (`distance_pickup_km`) depende de donde esta el repartidor y aqui
+        # solo se podria escribir 0.0. Un log con el deadhead en cero no es un
+        # registro fiel de la entrada, y el replay del protocolo (seccion 6)
+        # lo delata: reproducirlo da una economia distinta y un diff que
+        # parece no-determinismo sin serlo.
+        self.defer_order_logging = False
+
         # Campos extra del evento `shift_end`. Quien corre el turno los va
         # llenando (ganancias, entregas, violaciones); el generador no los
         # conoce. Como `event_stream` es perezoso y `shift_end` se escribe al
@@ -425,11 +434,20 @@ class SimulationEngine:
             "vehicle": self.vehicle.type.value,
         })
 
-    def _log_shock(self, event: RoadEvent) -> None:
+    def shock_event(self, event: RoadEvent) -> dict:
+        """El evento `shock` oficial de un RoadEvent interno.
+
+        Se expone porque quien corre el turno necesita el MISMO objeto que se
+        escribe al log para inyectarlo en el registro de shocks. Si el log
+        dijera una cosa y el registro otra, reproducir el turno daria
+        decisiones distintas y pareceria no-determinismo.
+        """
         location = event.location[0] if isinstance(event.location, list) else event.location
         zone = self.zone_map.nearest_zone(location)
         shock_type = "surge" if event.type == "surge" else ("closure" if event.type == "closure" else "delay")
         payload = {
+            "event": EventType.SHOCK.value,
+            "sim_time": self._iso(self.current_time),
             "shock_type": shock_type,
             "zone": zone.zone_id,
         }
@@ -437,6 +455,12 @@ class SimulationEngine:
             payload["multiplier"] = event.multiplier
         if getattr(event, "duration_min", None) is not None:
             payload["duration_min"] = event.duration_min
+        return payload
+
+    def _log_shock(self, event: RoadEvent) -> None:
+        payload = {
+            k: v for k, v in self.shock_event(event).items() if k not in ("event", "sim_time")
+        }
         self._log(EventType.SHOCK, self.current_time, payload)
 
     def log_offer_decision(
@@ -480,7 +504,8 @@ class SimulationEngine:
             # 40% probabilidad de nueva oferta
             if chance < 0.40:
                 offer = self._generate_offer()
-                self._log_order_offered(offer)
+                if not self.defer_order_logging:
+                    self._log_order_offered(offer)
                 yield offer
 
             # 10% probabilidad de evento externo

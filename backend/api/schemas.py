@@ -36,6 +36,12 @@ class CourierStateOverrides(BaseModel):
     # `[]`); se deja sin tipar para no rechazar payloads reales de jueces con
     # una forma distinta a la que adivinemos.
     in_flight_orders: list[dict[str, Any]] = Field(default_factory=list)
+    # Extension nuestra, no del contrato oficial: hasta cuando el repartidor
+    # esta comprometido. `in_flight_orders` no puede expresar una pausa
+    # obligatoria -- no es un pedido -- asi que sin este campo el endpoint
+    # subestima la cola justo despues de programar un descanso y acepta algo
+    # que no cabe. Los jueces nunca lo mandan y su ausencia no cambia nada.
+    unavailable_until: datetime | None = None
 
 
 class DecideRequest(BaseModel):

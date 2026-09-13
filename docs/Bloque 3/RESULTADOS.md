@@ -23,23 +23,23 @@ Seeds de tuning (**disjuntas**, nunca reportadas): `11 23 37 41 59 67 71 83 89
 | HighestPay | 1814.1 | 226.8 | 11.5 | 8.9 | 50.6 | 269 | **470** |
 | NearestFirst | 1194.8 | 149.3 | 21.4 | 12.8 | 24.1 | 498 | **923** |
 | GreedyRate | 2685.5 | 335.7 | 15.4 | 16.8 | 55.8 | 334 | **509** |
-| *GreedyRateSafe* | *2367.5* | *295.9* | *7.5* | *14.8* | *57.4* | *135* | ***0*** |
-| **OurAgent** | **2473.3** | **309.2** | **8.0** | **15.8** | **54.0** | **150** | **0** |
-| Oracle | 2745.6 | 343.2 | 8.8 | 17.3 | 55.7 | 175 | **0** |
+| *GreedyRateSafe* | *2392.6* | *299.1* | *7.8* | *15.3* | *57.7* | *142* | ***0*** |
+| **OurAgent** | **2513.7** | **314.2** | **8.3** | **16.3** | **54.6** | **163** | **0** |
+| Oracle | 2742.8 | 342.8 | 9.0 | 17.7 | 54.7 | 180 | **0** |
 
 `GreedyRateSafe` no es un baseline del template: es una fila de diagnóstico
 que hace legible el resto.
 
 ## 2. Qué dice la tabla, en dos restas
 
-**Perdemos 7.9% contra el mejor baseline, y el motivo es exactamente la
+**Perdemos 6.4% contra el mejor baseline, y el motivo es exactamente la
 seguridad.** Vale más decirlo así que maquillarlo:
 
 ```
 GreedyRate        $2686   509 violaciones   ← el baseline más fuerte, sin seguridad
-GreedyRateSafe    $2368     0 violaciones   ← el gate de seguridad cuesta  −11.8%
-OurAgent          $2473     0 violaciones   ← el valor de zona recupera    + 4.5%
-Oracle            $2746     0 violaciones   ← capturamos el 90.1%
+GreedyRateSafe    $2393     0 violaciones   ← el gate de seguridad cuesta  −10.9%
+OurAgent          $2514     0 violaciones   ← el valor de zona recupera    + 5.1%
+Oracle            $2743     0 violaciones   ← capturamos el 91.6%
 ```
 
 Las tres frases que se sostienen con esto:
@@ -47,9 +47,9 @@ Las tres frases que se sostienen con esto:
 1. **Cero violaciones de seguridad en los 12 turnos held-out, y en los tres
    vehículos.** Hay un test parametrizado por seed que lo comprueba turno a
    turno, no sobre el promedio.
-2. **El precio de la seguridad es 11.8% de las ganancias**, y lo sabemos con
+2. **El precio de la seguridad es 10.9% de las ganancias**, y lo sabemos con
    un número porque medimos la misma política con y sin el gate.
-3. **De lo que se puede ganar sin violar nada, capturamos el 90.1%.** El resto
+3. **De lo que se puede ganar sin violar nada, capturamos el 91.6%.** El resto
    es lo que cuesta elegir el umbral a ciegas en vez de con conocimiento del
    turno completo.
 
@@ -99,12 +99,12 @@ trabajo y es tentador quedarse con la versión favorable.
 Con el mapa de 4 zonas aportaba +10.3%. Al pasar a 16 zonas y recalibrar a
 mano en $260, la diferencia contra peso 0 en held-out fue **cero** ($2454.3
 contra $2452.1). Con la calibración reproducible de `calibrate.py`, que sitúa
-el umbral en $275, aporta **+4.5%** ($2367.5 contra $2473.3).
+el umbral en $275, aporta **+5.1%** ($2392.6 contra $2513.7).
 
 Las tres medidas son sobre las mismas seeds held-out. Lo que cambió entre
 ellas fue el umbral, no el peso — y eso es el resultado: **el efecto de la
 zona es de segundo orden frente al salario de reserva**. Es honesto decir que
-aporta +4.5% con esta calibración, y deshonesto presentarlo como una mejora
+aporta +5.1% con esta calibración, y deshonesto presentarlo como una mejora
 robusta.
 
 En ningún momento se re-tuneó el peso contra las seeds de reporte: el 0.6 sale
@@ -171,6 +171,47 @@ forma de detectar una dependencia del orden de iteración de un `set` o un
 
 El log de un turno trae los **8 tipos de evento** oficiales, en orden
 cronológico, y pasa `validate_format.py --event-log`.
+
+## 6.bis Replay: el número, y los dos bugs que lo produjeron
+
+```bash
+python3 scripts/replay.py --seed 101 --record                    # en proceso
+python3 scripts/replay.py --seed 101 --endpoint http://localhost:8000
+```
+
+**201 decisiones reproducidas sin una sola diferencia**, por los dos
+transportes. El de HTTP es el que vale: reproduce contra el proceso que está
+corriendo, con su estado acumulado, no contra una instancia limpia creada para
+la ocasión.
+
+Lo que hace creíble el número es que durante la reproducción los parámetros de
+tier2 quedan **clavados**. El protocolo permite que varíen *"provided no
+fast-path decision changes as a result"*, y en nuestro diseño esa licencia no
+sirve: `reservation_wage_mxn_hr` **sí** cambia decisiones. Si el modelo pudiera
+publicar una revisión a media corrida, un diff limpio no probaría determinismo.
+
+**El replay encontró dos bugs que ninguna revisión de código había visto.** Es
+el argumento de por qué existe:
+
+1. **El event log grababa `distance_pickup_km: 0.0`.** El generador emite
+   `order_offered` cuando crea la oferta, y en ese momento no sabe dónde está
+   el repartidor; el deadhead real lo calcula el corredor después. El log
+   pasaba el validador oficial (el campo existía) y era **falso**. Un juez que
+   lo reprodujera habría visto una economía distinta en las 201 decisiones.
+2. **El arnés y el endpoint eran dos caminos de decisión distintos.** El arnés
+   registraba los shocks en el log pero nunca los dejaba afectar a la
+   decisión: el turno se grababa como si hubiera habido cierres y lluvia, y
+   decidía como si no hubiera pasado nada. O sea, **la tabla de resultados
+   describía un agente que no existía**. Se arregló haciendo que `OurAgent`
+   llame al mismo `decide_request` que sirve el endpoint, en vez de tener una
+   copia "equivalente" de la lógica.
+
+Hay un tercer hallazgo menor pero instructivo: `courier_state_overrides` no
+puede expresar una **pausa obligatoria** — no es un pedido, así que no cabe en
+`in_flight_orders`. El endpoint subestimaba la cola justo después de programar
+un descanso y aceptaba algo que no cabía en el turno. Se añadió
+`unavailable_until` como extensión nuestra del contrato; los jueces nunca la
+mandan y su ausencia no cambia nada.
 
 ## 7. Limitaciones conocidas
 

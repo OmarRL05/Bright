@@ -47,7 +47,8 @@ degradado destruye justo la transición que hay que demostrar.
 | 3 | **C** La frontera de las 22:00 | constraint 1 (`flagged_zone_night`), frontera | 60 s |
 | 4 | **D** Respuesta desde la bitácora | `explain_decision` en <10 s | 30 s |
 | 5 | **F** Entra un surge **en vivo** | protocolo §5: shock inyectado | 45 s |
-| 6 | **E** Se cae el modelo | protocolo §7, con la red apagada | 90 s |
+| 6 | **G** Replay determinista | protocolo §6: grabar, reproducir, difear | 60 s |
+| 7 | **E** Se cae el modelo | protocolo §7, con la red apagada | 90 s |
 
 **A y B son las dos constraints ensayadas que el protocolo exige.** C es de
 regalo y es la que mejor aguanta una repregunta.
@@ -163,6 +164,28 @@ Ninguna oferta se encoló: **el fast path no conoce al advisor**, así que no
 puede esperarlo aunque quisiera. Encender la red otra vez y mostrar la
 recuperación.
 
+### G — grabar, reproducir, difear
+
+```
+✔ IDENTICO  201 decisiones reproducidas sin una sola diferencia
+   shocks   : 44 reinyectados
+   strategy : 1 reinyectado  (parámetros clavados)
+```
+
+> «Grabamos el turno, se lo reproducimos contra este mismo servidor —el que
+> está corriendo, con su estado— y difeamos las 201 decisiones. Ni una
+> diferencia.»
+
+**Si preguntan por qué es creíble:** durante la reproducción los parámetros de
+tier2 quedan **clavados**. El protocolo permite que varíen si ninguna decisión
+del fast path cambia por ello; en nuestro diseño sí cambiaría, porque el
+salario de reserva es el umbral. Sin clavarlos, un diff limpio no probaría
+nada.
+
+**Si preguntan qué encontró:** dos bugs que ninguna revisión de código vio —
+el log grababa el deadhead en cero, y el arnés decidía ignorando los shocks
+que él mismo registraba. Está en `RESULTADOS.md` §6.bis.
+
 ## Las preguntas que traen escritas
 
 | pregunta | dónde se contesta | respuesta corta |
@@ -174,6 +197,7 @@ recuperación.
 | *«What did you cut, and why?»* | `RESULTADOS.md` §4 | el salario decreciente al final del turno: empeoró entre −0.7% y −4.8% |
 | *«Why did you skip that order?»* | escena D | desde el log, 1 ms |
 | *«What would it do if a surge hit right now?»* | escena F | SKIP → ACCEPT, mismo pedido |
+| *«¿Puedes reproducir este turno?»* | escena G | 201 decisiones, cero diferencias |
 | *«What if the restaurant is 15 min late?»* | — | `restaurant_prep_min` entra en la estimación; sube el tiempo total y puede activar `heat_rule` o `shift_end_infeasible` |
 
 ## Lo que NO hay que hacer en la demo

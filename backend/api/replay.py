@@ -28,10 +28,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from typing import Any
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 from core.agent.journal import JOURNAL, to_decision_event
+from core.agent.shocks import SHOCKS
+from core.agent.strategy import STRATEGY
 
 router = APIRouter(tags=["replay"])
 
@@ -146,4 +151,60 @@ async def replay_summary(seed: int) -> dict:
         "shift_start": inicio,
         "shift_end": fin,
         "url": f"/replay/{seed}",
+    }
+
+
+# ==========================================================================
+# Cebado para reproducir contra el servidor vivo
+#
+# El protocolo (seccion 6) dice "replay that log against your running system".
+# Contra el proceso que corre, no contra una instancia limpia creada para la
+# ocasion -- esa seria una prueba mas facil. Estas dos rutas ponen al servidor
+# en el estado que tenia el turno grabado y lo devuelven despues.
+# ==========================================================================
+
+
+class PrimeRequest(BaseModel):
+    """Los eventos del log. Se aceptan enteros para no tener que decidir aqui
+    cuales importan: el cebado se queda con `shock` y `strategy_update`."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    events: list[dict[str, Any]] = Field(default_factory=list)
+
+
+@router.post("/replay/prime")
+async def replay_prime(body: PrimeRequest) -> dict:
+    """Reinyecta los shocks y los parametros de estrategia de un turno grabado.
+
+    Ademas **clava** la capa de estrategia: mientras dure el replay, tier2 no
+    publica nada. Sin eso, una revision del modelo a media reproduccion
+    cambiaria decisiones y el diff saldria distinto por diseño, no por un bug
+    -- y el protocolo pide poder distinguir exactamente esas dos cosas.
+    """
+    from core.evaluation.replay import prime
+
+    shocks, strategy_events = prime(body.events)
+    return {
+        "shocks": shocks,
+        "strategy_events": strategy_events,
+        "pinned": STRATEGY.replay_pinned,
+        "reservation_wage_mxn_hr": STRATEGY.snapshot().reservation_wage_mxn_hr,
+    }
+
+
+@router.post("/replay/resume")
+async def replay_resume() -> dict:
+    """Devuelve el servidor a modo vivo: tier2 vuelve a poder publicar.
+
+    No restaura los parametros previos a proposito -- los del log son tan
+    validos como cualquier punto de partida, y volver atras inventaria una
+    revision que nunca existio.
+    """
+    STRATEGY.resume_live()
+    limpiados = SHOCKS.clear()
+    return {
+        "pinned": STRATEGY.replay_pinned,
+        "shocks_cleared": limpiados,
+        "reservation_wage_mxn_hr": STRATEGY.snapshot().reservation_wage_mxn_hr,
     }

@@ -41,6 +41,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -529,9 +530,34 @@ def _correr_escena(escena: Escena, base_url: str) -> bool:
     return todo_ok
 
 
+def _escena_g(base_url: str) -> bool:
+    """Grabar un turno, reproducirlo y difear las decisiones."""
+    import subprocess
+
+    _titulo("G", "Replay: grabar un turno, reproducirlo y difear")
+    print(f"{GRIS}  demuestra: protocolo seccion 6, contra el servidor que esta corriendo{FIN}")
+    print(f"{GRIS}  pregunta:  «¿Puedes reproducir este turno y enseñarme que da lo mismo?»{FIN}\n")
+
+    guion = Path(__file__).with_name("replay.py")
+    proceso = subprocess.run(
+        [sys.executable, str(guion), "--seed", "101", "--record", "--endpoint", base_url],
+        capture_output=True,
+        text=True,
+    )
+    print("\n".join("  " + l for l in proceso.stdout.splitlines()[3:]))
+    ok = proceso.returncode == 0
+    _veredicto(ok, "diff de decisiones")
+    print(
+        f"\n  {GRIS}Lo que hace creible el numero es que los parametros de tier2 quedan{FIN}"
+        f"\n  {GRIS}CLAVADOS durante la reproduccion: si el modelo pudiera publicar una{FIN}"
+        f"\n  {GRIS}revision a media corrida, un diff limpio no probaria determinismo.{FIN}\n"
+    )
+    return ok
+
+
 ESCENAS_PING = {e.clave: e for e in (_escena_a(), _escena_b(), _escena_c(), _escena_f())}
-ESCENAS_ESPECIALES = {"D": _escena_d, "E": _escena_e}
-ORDEN = ("A", "B", "C", "D", "F", "E")
+ESCENAS_ESPECIALES = {"D": _escena_d, "E": _escena_e, "G": _escena_g}
+ORDEN = ("A", "B", "C", "D", "F", "G", "E")
 
 
 def main() -> int:
@@ -549,7 +575,15 @@ def main() -> int:
     if args.list:
         for clave in ORDEN:
             escena = ESCENAS_PING.get(clave)
-            titulo = escena.titulo if escena else {"D": "Respuesta desde la bitácora", "E": "Caída del modelo"}[clave]
+            titulo = (
+                escena.titulo
+                if escena
+                else {
+                    "D": "Respuesta desde la bitácora",
+                    "E": "Caída del modelo",
+                    "G": "Replay determinista",
+                }[clave]
+            )
             print(f"  {clave}  {titulo}")
         return 0
 

@@ -127,7 +127,35 @@ def _order_total_time_min(
 
 @router.post("/decide", response_model=DecideResponse)
 async def decide(request: DecideRequest, background: BackgroundTasks) -> DecideResponse:
-    """Nunca debe devolver 500: un crash en la ventana de decision es un
+    """Transporte HTTP. La decision entera vive en `decide_request`.
+
+    La separacion no es cosmetica: el replay del protocolo (seccion 6) tiene
+    que reproducir un turno contra **el sistema que corre**, no contra una
+    copia parecida. Llamando los dos a la misma funcion, "es el mismo codigo"
+    es una propiedad del programa y no una promesa del README.
+
+    Lo unico que queda aqui es lo que de verdad es transporte: el refresco de
+    tier2 como tarea de fondo, que corre DESPUES de que la respuesta salio.
+    """
+    response = decide_request(request)
+    # ENTRE pings, nunca dentro: la tarea de fondo corre despues de que este
+    # response ya salio, y `maybe_refresh` ademas solo despacha (no espera al
+    # modelo) y respeta su intervalo en tiempo de simulacion. El protocolo es
+    # explicito: la capa de estrategia "runs between pings, never inside a
+    # decision window".
+    background.add_task(_refresh_strategy, request)
+    return response
+
+
+def decide_request(
+    request: DecideRequest,
+    *,
+    reservation_wage_mxn_hr: float | None = None,
+    record: bool = True,
+) -> DecideResponse:
+    """La decision completa, sincrona y sin transporte.
+
+    Nunca debe devolver 500: un crash en la ventana de decision es un
     hard failure de Feasibility (evaluation_protocol.md seccion 7). El
     parseo del body ya paso por pydantic antes de llegar aqui (422 si el
     request esta mal formado, lo cual es comportamiento esperado del
@@ -138,7 +166,15 @@ async def decide(request: DecideRequest, background: BackgroundTasks) -> DecideR
     """
     t0 = time.perf_counter()
     strategy = STRATEGY.snapshot()  # lectura de atributo: no bloquea, no falla
-    record: DecisionRecord | None = None
+
+    # El arnes de evaluacion fija el umbral por politica y no quiere ensuciar
+    # la bitacora con 17 mil decisiones de calibracion. Los dos parametros
+    # existen para que el arnes pueda llamar a ESTA funcion en vez de tener su
+    # propia copia de la logica -- tener dos caminos de decision es como se
+    # acaba reportando una tabla que describe un sistema distinto del que los
+    # jueces prueban.
+    wage = reservation_wage_mxn_hr if reservation_wage_mxn_hr is not None else strategy.reservation_wage_mxn_hr
+    registro: DecisionRecord | None = None
 
     try:
         overrides = request.courier_state_overrides
@@ -156,7 +192,9 @@ async def decide(request: DecideRequest, background: BackgroundTasks) -> DecideR
 
         total_time_min = _order_total_time_min(request, effects)
         in_flight_weight, in_flight_volume = in_flight_totals(overrides.in_flight_orders)
-        queue_offset = queue_offset_min(overrides.in_flight_orders, request.sim_time)
+        queue_offset = queue_offset_min(
+            overrides.in_flight_orders, request.sim_time, overrides.unavailable_until
+        )
 
         verdict = evaluate_safety_full(
             vehicle=request.vehicle,
@@ -192,7 +230,7 @@ async def decide(request: DecideRequest, background: BackgroundTasks) -> DecideR
             delivery_km=delivery_km,
             profile=profile,
             zone_dropoff=request.zone_dropoff,
-            reservation_wage_mxn_hr=strategy.reservation_wage_mxn_hr,
+            reservation_wage_mxn_hr=wage,
         )
 
         economic_accept = economics.adjusted_rate_mxn_hr >= economics.reservation_wage_mxn_hr
@@ -223,7 +261,7 @@ async def decide(request: DecideRequest, background: BackgroundTasks) -> DecideR
         reason = reasons.note_shocks(reason, effects.applied)
 
         economics_breakdown = EconomicsBreakdown(**economics.__dict__)
-        record = DecisionRecord(
+        registro = DecisionRecord(
             order=request,
             overrides=overrides,
             verdict=verdict,
@@ -271,7 +309,7 @@ async def decide(request: DecideRequest, background: BackgroundTasks) -> DecideR
         # recibe un 404, que parece que perdimos la decision en vez de que la
         # tomamos mal. El texto de la excepcion vive en el journal, no en el
         # `reason` que se lee en voz alta.
-        record = DecisionRecord(
+        registro = DecisionRecord(
             order=request,
             overrides=request.courier_state_overrides,
             verdict=SafetyVerdict(),
@@ -285,12 +323,13 @@ async def decide(request: DecideRequest, background: BackgroundTasks) -> DecideR
 
     latency_ms = (time.perf_counter() - t0) * 1000
 
-    if record is not None:
-        # `record` es frozen: se reemplaza por una copia con la latencia real.
-        # Medir primero y registrar despues es lo correcto -- el numero que se
-        # reporta tiene que incluir todo el trabajo, no todo menos el ultimo paso.
+    if record and registro is not None:
+        # `registro` es frozen: se reemplaza por una copia con la latencia
+        # real. Medir primero y registrar despues es lo correcto -- el numero
+        # que se reporta tiene que incluir todo el trabajo, no todo menos el
+        # ultimo paso.
         JOURNAL.record(
-            DecisionRecord(**{**record.__dict__, "latency_ms": latency_ms})
+            DecisionRecord(**{**registro.__dict__, "latency_ms": latency_ms})
         )
 
     response = DecideResponse(
@@ -304,13 +343,6 @@ async def decide(request: DecideRequest, background: BackgroundTasks) -> DecideR
         economics=economics_breakdown,
         shocks_applied=list(effects.applied),
     )
-
-    # ENTRE pings, nunca dentro: la tarea de fondo corre despues de que este
-    # response ya salio, y `maybe_refresh` ademas solo despacha (no espera al
-    # modelo) y respeta su intervalo en tiempo de simulacion. El protocolo es
-    # explicito: la capa de estrategia "runs between pings, never inside a
-    # decision window".
-    background.add_task(_refresh_strategy, request)
 
     return response
 
@@ -466,3 +498,12 @@ async def status() -> StatusResponse:
         advisor=health.advisor,
         decisions_recorded=len(JOURNAL),
     )
+
+
+def decide_sync(request: DecideRequest) -> dict:
+    """`decide_request` devuelto como dict, para el driver de replay.
+
+    El replay compara contra los campos del event log, que son dicts; pedirle
+    que hable pydantic solo para volver a serializar seria ruido.
+    """
+    return decide_request(request).model_dump()

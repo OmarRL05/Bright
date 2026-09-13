@@ -138,8 +138,12 @@ def latest_in_flight_eta(in_flight_orders: Any) -> datetime | None:
     return max(etas) if etas else None
 
 
-def queue_offset_min(in_flight_orders: Any, sim_time: datetime | None) -> float:
-    """Minutos que falta para terminar lo ya aceptado.
+def queue_offset_min(
+    in_flight_orders: Any,
+    sim_time: datetime | None,
+    unavailable_until: datetime | None = None,
+) -> float:
+    """Minutos que falta para que el repartidor quede libre.
 
     Es lo que hace que la constraint de fin de turno vea la RUTA COMBINADA y no
     solo el pedido suelto -- la categoria de sondeo "Stacking and route
@@ -147,10 +151,11 @@ def queue_offset_min(in_flight_orders: Any, sim_time: datetime | None) -> float:
     """
     if sim_time is None:
         return 0.0
-    latest = latest_in_flight_eta(in_flight_orders)
-    if latest is None:
+
+    momentos = [m for m in (latest_in_flight_eta(in_flight_orders), unavailable_until) if m]
+    if not momentos:
         return 0.0
-    return max(0.0, (latest - sim_time).total_seconds() / 60.0)
+    return max(0.0, (max(momentos) - sim_time).total_seconds() / 60.0)
 
 
 # ==========================================================================
