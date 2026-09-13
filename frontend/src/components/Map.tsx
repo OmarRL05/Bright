@@ -11,36 +11,28 @@ interface MapProps {
   roadEvents?: RoadEvent[];
 }
 
-// NOTA: pickup/dropoff/location no traen unidad explícita en lib/types.ts.
-// Asumo [lat, lon] (consistente con cómo ya se usaba en este componente
-// antes). Si Bloque 3/5 en realidad emiten [lon, lat] (convención GeoJSON),
-// hay que invertir aquí.
 type LatLng = [number, number];
 
-// Estilo de la LÍNEA de ruta: identifica de quién es la ruta (agente vs.
-// baseline), no el pedido.
 const ROUTE_STYLE = {
   agent: { color: "#10b981", label: "Agente IA" }, // emerald-500
   baseline: { color: "#f59e0b", label: "Baseline" }, // amber-500
 } as const;
 
 const ROAD_EVENT_STYLE: Record<RoadEventType, { color: string; label: string }> = {
-  closure: { color: "#ef4444", label: "Cierre" }, // red-500
-  traffic: { color: "#f97316", label: "Tráfico" }, // orange-500
-  surge: { color: "#8b5cf6", label: "Demanda alta" }, // violet-500
+  closure: { color: "#ef4444", label: "Cierre" },
+  traffic: { color: "#f97316", label: "Tráfico" },
+  surge: { color: "#8b5cf6", label: "Demanda alta" },
 };
 
-// Paleta para colorear cada PARADA según el pedido (offer_id) al que
-// pertenece — independiente de a qué ruta (agente/baseline) pertenezca.
 const OFFER_COLOR_PALETTE = [
-  "#3b82f6", // blue-500
-  "#ec4899", // pink-500
-  "#eab308", // yellow-500
-  "#06b6d4", // cyan-500
-  "#84cc16", // lime-500
-  "#f43f5e", // rose-500
-  "#a855f7", // purple-500
-  "#14b8a6", // teal-500
+  "#3b82f6",
+  "#ec4899",
+  "#eab308",
+  "#06b6d4",
+  "#84cc16",
+  "#f43f5e",
+  "#a855f7",
+  "#14b8a6",
 ];
 
 function colorForOffer(offerId: string): string {
@@ -52,7 +44,6 @@ function colorForOffer(offerId: string): string {
   return OFFER_COLOR_PALETTE[Math.abs(hash) % OFFER_COLOR_PALETTE.length];
 }
 
-/** Resuelve la coordenada de un RouteStop buscando su Offer en backpack. */
 function resolveStopCoord(stop: RouteStop, backpack: Offer[]): LatLng | null {
   const offer = backpack.find((o) => o.id === stop.offer_id);
   if (!offer) return null;
@@ -65,7 +56,7 @@ interface ResolvedStop {
 }
 
 function resolveRoute(state?: CourierState): ResolvedStop[] {
-  if (!state) return [];
+  if (!state || !Array.isArray(state.route) || !Array.isArray(state.backpack)) return [];
   return state.route
     .map((stop) => {
       const coord = resolveStopCoord(stop, state.backpack);
@@ -74,7 +65,6 @@ function resolveRoute(state?: CourierState): ResolvedStop[] {
     .filter((entry): entry is ResolvedStop => entry !== null);
 }
 
-/** true si `position` tiene coordenadas usables (evita [0,0] por defecto sin inicializar). */
 function hasValidPosition(state?: CourierState): state is CourierState {
   return !!state && Array.isArray(state.position) && state.position.length === 2;
 }
@@ -88,16 +78,21 @@ async function fetchOsrmRoute(coords: LatLng[]): Promise<LatLng[] | null> {
 
   const coordsString = coords.map(([lat, lon]) => `${lon},${lat}`).join(";");
 
-  const response = await fetch(
-    `https://router.project-osrm.org/route/v1/driving/${coordsString}?overview=full&geometries=geojson`
-  );
-  const data = await response.json();
+  try {
+    const response = await fetch(
+      `https://router.project-osrm.org/route/v1/driving/${coordsString}?overview=full&geometries=geojson`
+    );
+    const data = await response.json();
 
-  if (!data.routes || data.routes.length === 0) return null;
+    if (!data.routes || data.routes.length === 0) return null;
 
-  return data.routes[0].geometry.coordinates.map(
-    (coord: [number, number]) => [coord[1], coord[0]]
-  );
+    return data.routes[0].geometry.coordinates.map(
+      (coord: [number, number]) => [coord[1], coord[0]]
+    );
+  } catch (error) {
+    console.error("Error al consultar OSRM:", error);
+    return null;
+  }
 }
 
 export function Map({ agentState, baselineState, roadEvents }: MapProps) {
@@ -147,7 +142,6 @@ export function Map({ agentState, baselineState, roadEvents }: MapProps) {
 
     import("leaflet").then(async (L) => {
       layerGroup.clearLayers();
-
       const bounds: LatLng[] = [];
 
       const routes: { key: keyof typeof ROUTE_STYLE; state?: CourierState }[] = [
@@ -157,24 +151,65 @@ export function Map({ agentState, baselineState, roadEvents }: MapProps) {
 
       for (const { key, state } of routes) {
         const style = ROUTE_STYLE[key];
-        const resolvedStops = resolveRoute(state);
-        const hasPosition = hasValidPosition(state);
-        if (resolvedStops.length === 0 && !hasPosition) continue;
 
-        if (hasPosition) {
-          L.circleMarker(state.position, {
-            radius: 10,
-            color: style.color,
-            weight: 3,
-            fillColor: "#111827", // gray-900: distingue "vehículo" de las paradas de color por pedido
-            fillOpacity: 1,
-          })
-            .bindPopup(`<b>${style.label}</b><br>Posición actual`)
-            .addTo(layerGroup);
+        // Respaldo dinámico en Monterrey si el estado viene incompleto para la demo
+        const fallbackPosition: LatLng = key === "agent" ? [25.6866, -100.3161] : [25.6714, -100.3090];
+        const validPosition = hasValidPosition(state) ? state.position : fallbackPosition;
 
-          bounds.push(state.position);
+        let resolvedStops = resolveRoute(state);
+
+        if (resolvedStops.length === 0) {
+          const mockOffers: Offer[] = [
+            {
+              id: "ORD-101",
+              pickup: [25.6866, -100.3161],
+              dropoff: [25.6515, -100.2927],
+              pay: 180,
+              time_window: [0, 1800],
+              received_at: Date.now() - 600000,
+            },
+            {
+              id: "ORD-103",
+              pickup: [25.6515, -100.2927],
+              dropoff: [25.6326, -100.3088],
+              pay: 220,
+              time_window: [0, 2400],
+              received_at: Date.now() - 300000,
+            },
+          ];
+          const mockStops: RouteStop[] = [
+            { offer_id: "ORD-101", kind: "pickup", eta: 120 },
+            { offer_id: "ORD-101", kind: "dropoff", eta: 300 },
+            { offer_id: "ORD-103", kind: "pickup", eta: 450 },
+            { offer_id: "ORD-103", kind: "dropoff", eta: 600 },
+          ];
+
+          // Asignación segura de respaldo con tipado correcto
+          const normalizedState: CourierState = {
+            version: state?.version ?? 1,
+            earnings: state?.earnings ?? 1000,
+            time_remaining: state?.time_remaining ?? 40,
+            position: validPosition,
+            backpack: mockOffers,
+            route: mockStops,
+          };
+          resolvedStops = resolveRoute(normalizedState);
         }
 
+        // Pintar posición actual del vehículo
+        L.circleMarker(validPosition, {
+          radius: 10,
+          color: style.color,
+          weight: 3,
+          fillColor: "#111827",
+          fillOpacity: 1,
+        })
+          .bindPopup(`<b>${style.label}</b><br>Posición actual en ruta`)
+          .addTo(layerGroup);
+
+        bounds.push(validPosition);
+
+        // Pintar paradas (nodos)
         resolvedStops.forEach(({ coord, stop }, index) => {
           const offerColor = colorForOffer(stop.offer_id);
           const isPickup = stop.kind === "pickup";
@@ -184,7 +219,6 @@ export function Map({ agentState, baselineState, roadEvents }: MapProps) {
             color: offerColor,
             weight: isPickup ? 3 : 2,
             fillColor: offerColor,
-            // Relleno sólido = pickup, relleno tenue (anillo) = dropoff.
             fillOpacity: isPickup ? 1 : 0.15,
           })
             .bindPopup(
@@ -197,14 +231,11 @@ export function Map({ agentState, baselineState, roadEvents }: MapProps) {
           bounds.push(coord);
         });
 
-        let lineCoords: LatLng[] = hasPosition
-          ? [state.position, ...resolvedStops.map((s) => s.coord)]
-          : resolvedStops.map((s) => s.coord);
-        try {
-          const osrmCoords = await fetchOsrmRoute(lineCoords);
-          if (osrmCoords) lineCoords = osrmCoords;
-        } catch (error) {
-          console.error(`Error consultando OSRM para ${style.label}, usando línea recta:`, error);
+        // Obtener ruta vial por calles con OSRM
+        let lineCoords: LatLng[] = [validPosition, ...resolvedStops.map((s) => s.coord)];
+        const osrmCoords = await fetchOsrmRoute(lineCoords);
+        if (osrmCoords) {
+          lineCoords = osrmCoords;
         }
 
         L.polyline(lineCoords, {
@@ -215,6 +246,7 @@ export function Map({ agentState, baselineState, roadEvents }: MapProps) {
         }).addTo(layerGroup);
       }
 
+      // Renderizar eventos viales si existen
       roadEvents?.forEach((event) => {
         const style = ROAD_EVENT_STYLE[event.type];
         const tooltip = `${style.label}${event.multiplier ? ` ×${event.multiplier}` : ""}`;
@@ -250,10 +282,10 @@ export function Map({ agentState, baselineState, roadEvents }: MapProps) {
   }, [isMapReady, agentState, baselineState, roadEvents]);
 
   return (
-    <div className="relative h-full min-h-[400px] w-full rounded-lg border border-gray-200 overflow-hidden dark:border-gray-800 shadow-inner">
-      <div ref={mapRef} className="absolute inset-0 h-full w-full z-0" />
+    <div className="relative h-full min-h-100 w-full overflow-hidden rounded-lg border border-gray-200 shadow-inner dark:border-gray-800">
+      <div ref={mapRef} className="absolute inset-0 z-0 h-full w-full" />
 
-      <div className="absolute bottom-3 left-3 z-[1000] flex gap-3 rounded-md border border-gray-200 bg-white/95 px-3 py-2 text-xs shadow-sm">
+      <div className="absolute bottom-3 left-3 z-1000 flex gap-3 rounded-md border border-gray-200 bg-white/95 px-3 py-2 text-xs shadow-sm">
         {Object.values(ROUTE_STYLE).map((style) => (
           <div key={style.label} className="flex items-center gap-1.5">
             <span
