@@ -17,6 +17,18 @@ para el desglose completo.
 La excepcion de "costo marginal ~0" del frozen horizon (docs/01_Arquitectura.md
 seccion 6) es responsabilidad de decision.py, no de esta funcion: aqui
 `frozen_index` simplemente acota el rango de busqueda.
+
+Hallazgo 1 (auditoria del 12 sep, corregido 13 sep): insertar una oferta
+recalcula en cadena las ETAs de todas las paradas posteriores al punto de
+insercion (ver `_build_route_with_insertion`), pero antes solo se validaba
+la ventana de tiempo de la oferta NUEVA -- nunca se revisaba si ese
+corrimiento sacaba a una parada YA ACEPTADA de su propia ventana. Reproducido
+en la auditoria: insertar una oferta B fuera de ruta hacia que el dropoff de
+A pasara de factible a 32 min tarde, y `feasible=True` de todos modos.
+`cheapest_insertion` ahora descarta (via `_downstream_still_feasible`) toda
+posicion candidata que violaria la ventana de una parada posterior -- una
+insercion nunca puede ADELANTAR un ETA (solo lo puede atrasar, distancia
+nunca negativa), asi que basta revisar el limite superior de cada ventana.
 """
 
 from dataclasses import dataclass
@@ -88,6 +100,35 @@ def _insertion_cost(
     return extra_time, extra_distance
 
 
+def _downstream_still_feasible(
+    current_route: list[RouteStop],
+    from_index: int,
+    start_location: tuple[float, float],
+    start_eta: float,
+    accepted_offers: dict[str, Offer],
+    distance_provider: DistanceProvider,
+) -> bool:
+    """True si, partiendo de `start_location`/`start_eta` (el dropoff de la
+    oferta que se esta evaluando insertar), todas las paradas de
+    `current_route[from_index:]` siguen llegando dentro de su propia
+    ventana de tiempo tras el corrimiento en cadena de sus ETAs.
+
+    Solo se revisa el limite SUPERIOR de cada ventana: insertar una oferta
+    nunca puede adelantar un ETA posterior (la distancia extra siempre es
+    >= 0), solo atrasarlo -- ver Hallazgo 1 en el docstring del modulo.
+    """
+    prev_location, prev_eta = start_location, start_eta
+    for stop in current_route[from_index:]:
+        location = _location_of(stop, accepted_offers)
+        new_eta = prev_eta + distance_provider.travel_time(prev_location, location)
+        if stop.kind == "dropoff":
+            window_end = accepted_offers[stop.offer_id].time_window[1]
+            if new_eta > window_end:
+                return False
+        prev_location, prev_eta = location, new_eta
+    return True
+
+
 def _build_route_with_insertion(
     current_route: list[RouteStop],
     offer: Offer,
@@ -145,7 +186,10 @@ def cheapest_insertion(
     Si ninguna posicion respeta `offer.time_window`, devuelve un resultado
     con `feasible=False` y `new_route=None` en vez de lanzar una excepcion:
     decidir que hacer con una oferta no insertable es responsabilidad de
-    decision.py, no de esta funcion.
+    decision.py, no de esta funcion. Lo mismo aplica si toda posicion que
+    respeta la ventana de `offer` rompe la ventana de una parada YA
+    ACEPTADA posterior (Hallazgo 1, ver docstring del modulo): tambien
+    cuenta como no insertable, `feasible=False`.
     """
 
     window_start, window_end = offer.time_window
@@ -175,6 +219,11 @@ def cheapest_insertion(
 
         _, dropoff_eta = _pickup_dropoff_eta(offer, prev_stop, prev_location, distance_provider)
         if not (window_start <= dropoff_eta <= window_end):
+            continue
+
+        if not _downstream_still_feasible(
+            current_route, index, offer.dropoff, dropoff_eta, accepted_offers, distance_provider
+        ):
             continue
 
         extra_time, extra_distance = _insertion_cost(offer, prev_location, next_location, distance_provider)

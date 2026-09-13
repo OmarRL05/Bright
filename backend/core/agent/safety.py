@@ -26,10 +26,19 @@ Vehicle = str  # "moto" | "car" | "bike", tal como llega del request HTTP
 # --- Constraint 1: zona marcada de noche ---------------------------------
 NIGHT_CURFEW_HOUR = 22  # dropoff en zona marcada a esta hora o despues -> refuse
 
-# Zona marcada: Centro (zone_id=2 en DEFAULT_ZONE_MAP, ver core.models) -- la
-# de mayor demand_score/densidad urbana, elegida como placeholder de riesgo
-# nocturno. Ajustar cuando el equipo defina un criterio real de zonas de riesgo.
-FLAGGED_ZONES: frozenset[int] = frozenset({DEFAULT_ZONE_MAP.zone_by_name("Centro").zone_id})
+# Zonas marcadas -- placeholder hasta que el equipo defina un criterio real
+# de riesgo nocturno, pero ya no es una sola zona: con el ZoneMap ampliado a
+# 16 zonas (ver core.models), dejar esto en solo "Centro" significaba que
+# flagged_zone_night practicamente nunca se disparaba contra los ids que
+# usan los ejemplos oficiales (zone_pickup/zone_dropoff hasta 11 en
+# decision_response_schema.json) -- un juez podia mandar zone_dropoff=11 a
+# las 23:00 y siempre aceptariamos. Tres zonas, con una razon distinta cada
+# una: Centro (alta densidad / vida nocturna), Parque Industrial (periferia,
+# poco transitada de noche) y Linda Vista (periferia, poca iluminacion).
+_FLAGGED_ZONE_NAMES = ("Centro", "Parque Industrial", "Linda Vista")
+FLAGGED_ZONES: frozenset[int] = frozenset(
+    DEFAULT_ZONE_MAP.zone_by_name(name).zone_id for name in _FLAGGED_ZONE_NAMES
+)
 
 # --- Constraint 2: break obligatorio --------------------------------------
 MANDATORY_BREAK_AFTER_MIN = 240.0  # 4 horas continuas

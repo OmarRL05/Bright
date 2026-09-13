@@ -20,6 +20,12 @@ usa `distance_pickup_km`/`distance_delivery_km` tal como llegan en el
 request en vez de resolver `zone_pickup`/`zone_dropoff` a coordenadas, para
 no depender de que un juez use las mismas zonas que nuestro simulador
 interno genera (ver docs/03_Integracion_API_Decide.md).
+
+La UNICA resolucion de zona que si se hace aqui es `_zone_demand()`: busca
+`zone_pickup` en `DEFAULT_ZONE_MAP` (16 zonas) para ajustar el salario de
+reserva por demanda -- si el juez manda una zona que no conocemos, cae a
+demanda neutral (`zone_known: false` queda explicito en explain_decision,
+no falla callado).
 """
 
 import time
@@ -33,9 +39,9 @@ from api.schemas import (
     EconomicsBreakdown,
     ExplainDecisionResponse,
 )
-from core.agent.economics import RESERVATION_WAGE_MXN_HR, evaluate_economics
+from core.agent.economics import NEUTRAL_DEMAND_SCORE, evaluate_economics
 from core.agent.safety import evaluate_safety
-from core.models import VEHICLE_PROFILES, VehicleType
+from core.models import DEFAULT_ZONE_MAP, VEHICLE_PROFILES, VehicleType
 
 MAX_REASON_WORDS = 40
 
@@ -71,6 +77,21 @@ def _order_total_time_min(request: DecideRequest) -> float:
     return pickup_ready_min + to_dropoff_min
 
 
+def _zone_demand(zone_id: int) -> tuple[float, bool]:
+    """(demand_score, zone_known) para `zone_id`.
+
+    Nuestro ZoneMap tiene 16 zonas (ver core.models) pero un juez puede
+    mandar cualquier entero -- no asumimos que su universo de zonas es el
+    nuestro. Si no la conocemos, demanda neutral (ni castiga ni premia el
+    salario de reserva) y lo dejamos explicito en el log de explain_decision
+    en vez de fallar callado.
+    """
+    zone = DEFAULT_ZONE_MAP.by_id_or_none(zone_id)
+    if zone is None:
+        return NEUTRAL_DEMAND_SCORE, False
+    return zone.demand_score, True
+
+
 def _clamp_reason(reason: str) -> str:
     words = reason.split()
     if len(words) <= MAX_REASON_WORDS:
@@ -94,6 +115,7 @@ async def decide(request: DecideRequest) -> DecideResponse:
         overrides = request.courier_state_overrides
 
         total_time_min = _order_total_time_min(request)
+        demand_score, zone_known = _zone_demand(request.zone_pickup)
 
         economics = evaluate_economics(
             base_pay_mxn=request.base_pay_mxn,
@@ -101,6 +123,7 @@ async def decide(request: DecideRequest) -> DecideResponse:
             surge_multiplier=request.surge_multiplier,
             total_time_min=total_time_min,
             deadhead_km=request.distance_pickup_km,
+            demand_score=demand_score,
         )
 
         violation = evaluate_safety(
@@ -119,12 +142,12 @@ async def decide(request: DecideRequest) -> DecideResponse:
             binding_constraint = violation.constraint
             reason = violation.reason
             alternatives = [AlternativeConsidered(option="ACCEPT", rejected_because=reason)]
-        elif economics.adjusted_rate_mxn_hr < RESERVATION_WAGE_MXN_HR:
+        elif economics.adjusted_rate_mxn_hr < economics.reservation_wage_mxn_hr:
             decision = "SKIP"
             binding_constraint = "reservation_wage"
             reason = (
                 f"${economics.adjusted_rate_mxn_hr:.0f}/hr < salario de reserva "
-                f"${RESERVATION_WAGE_MXN_HR:.0f}/hr"
+                f"${economics.reservation_wage_mxn_hr:.0f}/hr (demanda={demand_score:.2f})"
             )
             alternatives = [AlternativeConsidered(option="ACCEPT", rejected_because=reason)]
         else:
@@ -132,7 +155,8 @@ async def decide(request: DecideRequest) -> DecideResponse:
             binding_constraint = None
             reason = (
                 f"${economics.adjusted_rate_mxn_hr:.0f}/hr >= salario de reserva "
-                f"${RESERVATION_WAGE_MXN_HR:.0f}/hr, sin violar constraints de seguridad"
+                f"${economics.reservation_wage_mxn_hr:.0f}/hr (demanda={demand_score:.2f}), "
+                f"sin violar constraints de seguridad"
             )
             alternatives = [
                 AlternativeConsidered(
@@ -147,6 +171,10 @@ async def decide(request: DecideRequest) -> DecideResponse:
             "sim_time": request.sim_time.isoformat(),
             "zone_pickup": request.zone_pickup,
             "zone_dropoff": request.zone_dropoff,
+            "zone_known": zone_known,
+            "zone_pickup_known": zone_known,
+            "zone_dropoff_known": DEFAULT_ZONE_MAP.by_id_or_none(request.zone_dropoff) is not None,
+            "demand_score": demand_score,
             "vehicle": request.vehicle,
             "weight_kg": request.weight_kg,
             "volume_liters": request.volume_liters,
