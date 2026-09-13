@@ -75,7 +75,6 @@ function isMultiLocation(loc: RoadEvent["location"]): loc is LatLng[] {
 
 async function fetchOsrmRoute(coords: LatLng[]): Promise<LatLng[] | null> {
   if (coords.length < 2) return null;
-
   const coordsString = coords.map(([lat, lon]) => `${lon},${lat}`).join(";");
 
   try {
@@ -83,9 +82,7 @@ async function fetchOsrmRoute(coords: LatLng[]): Promise<LatLng[] | null> {
       `https://router.project-osrm.org/route/v1/driving/${coordsString}?overview=full&geometries=geojson`
     );
     const data = await response.json();
-
     if (!data.routes || data.routes.length === 0) return null;
-
     return data.routes[0].geometry.coordinates.map(
       (coord: [number, number]) => [coord[1], coord[0]]
     );
@@ -110,7 +107,6 @@ export function Map({ agentState, baselineState, roadEvents }: MapProps) {
 
       if (!mapInstanceRef.current && mapRef.current) {
         const map = L.map(mapRef.current).setView([25.6866, -100.3161], 12);
-
         L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
           attribution: "&copy; OpenStreetMap contributors",
           maxZoom: 19,
@@ -135,7 +131,6 @@ export function Map({ agentState, baselineState, roadEvents }: MapProps) {
 
   useEffect(() => {
     if (!isMapReady) return;
-
     const mapInstance = mapInstanceRef.current;
     const layerGroup = layerGroupRef.current;
     if (!mapInstance || !layerGroup) return;
@@ -152,29 +147,19 @@ export function Map({ agentState, baselineState, roadEvents }: MapProps) {
       for (const { key, state } of routes) {
         const style = ROUTE_STYLE[key];
 
-        // Respaldo dinámico en Monterrey si el estado viene incompleto para la demo
         const fallbackPosition: LatLng = key === "agent" ? [25.6866, -100.3161] : [25.6714, -100.3090];
         const validPosition = hasValidPosition(state) ? state.position : fallbackPosition;
-
         let resolvedStops = resolveRoute(state);
 
         if (resolvedStops.length === 0) {
           const mockOffers: Offer[] = [
             {
-              id: "ORD-101",
-              pickup: [25.6866, -100.3161],
-              dropoff: [25.6515, -100.2927],
-              pay: 180,
-              time_window: [0, 1800],
-              received_at: Date.now() - 600000,
+              id: "ORD-101", pickup: [25.6866, -100.3161], dropoff: [25.6515, -100.2927],
+              pay: 180, time_window: [0, 1800], received_at: Date.now() - 600000,
             },
             {
-              id: "ORD-103",
-              pickup: [25.6515, -100.2927],
-              dropoff: [25.6326, -100.3088],
-              pay: 220,
-              time_window: [0, 2400],
-              received_at: Date.now() - 300000,
+              id: "ORD-103", pickup: [25.6515, -100.2927], dropoff: [25.6326, -100.3088],
+              pay: 220, time_window: [0, 2400], received_at: Date.now() - 300000,
             },
           ];
           const mockStops: RouteStop[] = [
@@ -183,55 +168,56 @@ export function Map({ agentState, baselineState, roadEvents }: MapProps) {
             { offer_id: "ORD-103", kind: "pickup", eta: 450 },
             { offer_id: "ORD-103", kind: "dropoff", eta: 600 },
           ];
-
-          // Asignación segura de respaldo con tipado correcto
           const normalizedState: CourierState = {
-            version: state?.version ?? 1,
-            earnings: state?.earnings ?? 1000,
-            time_remaining: state?.time_remaining ?? 40,
-            position: validPosition,
-            backpack: mockOffers,
-            route: mockStops,
+            version: state?.version ?? 1, earnings: state?.earnings ?? 1000,
+            time_remaining: state?.time_remaining ?? 40, position: validPosition,
+            backpack: mockOffers, route: mockStops,
           };
           resolvedStops = resolveRoute(normalizedState);
         }
 
-        // Pintar posición actual del vehículo
-        L.circleMarker(validPosition, {
-          radius: 10,
-          color: style.color,
-          weight: 3,
-          fillColor: "#111827",
-          fillOpacity: 1,
-        })
-          .bindPopup(`<b>${style.label}</b><br>Posición actual en ruta`)
-          .addTo(layerGroup);
+        // 1. ESTILO DE REPARTIDOR (Vehículo) - Icono de camión estilizado usando HTML/CSS puro
+        const courierIcon = L.divIcon({
+          className: "courier-marker",
+          html: `<div style="background-color: ${style.color}; width: 32px; height: 32px; border-radius: 50%; border: 3px solid white; box-shadow: 0 4px 6px rgba(0,0,0,0.4); display: flex; justify-content: center; align-items: center; font-size: 16px; color: white; z-index: 999; position: relative;">🚚</div>`,
+          iconSize: [32, 32],
+          iconAnchor: [16, 16],
+        });
 
+        L.marker(validPosition, { icon: courierIcon })
+          .bindPopup(`<b>${style.label}</b><br>🚚 Posición actual en ruta`)
+          .addTo(layerGroup);
         bounds.push(validPosition);
 
-        // Pintar paradas (nodos)
+        // 2. ESTILO DE PEDIDOS (Paradas) - Cuadros limpios con "P" (Recolección) y "E" (Entrega)
         resolvedStops.forEach(({ coord, stop }, index) => {
           const offerColor = colorForOffer(stop.offer_id);
           const isPickup = stop.kind === "pickup";
 
-          L.circleMarker(coord, {
-            radius: 8,
-            color: offerColor,
-            weight: isPickup ? 3 : 2,
-            fillColor: offerColor,
-            fillOpacity: isPickup ? 1 : 0.15,
-          })
+          // Lógica visual: Pickup es un bloque sólido con letra 'P'. Dropoff es fondo blanco con borde de color y letra 'E'.
+          const stopIcon = L.divIcon({
+            className: "order-marker",
+            html: `<div style="background-color: ${isPickup ? offerColor : 'white'}; color: ${isPickup ? 'white' : offerColor}; border: 3px solid ${offerColor}; width: 24px; height: 24px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); display: flex; justify-content: center; align-items: center; font-weight: bold; font-family: monospace; font-size: 14px;">${isPickup ? 'P' : 'E'}</div>`,
+            iconSize: [24, 24],
+            iconAnchor: [12, 12],
+          });
+
+          L.marker(coord, { icon: stopIcon })
             .bindPopup(
-              `<b>${style.label} · parada ${index + 1}</b><br>` +
-                `${isPickup ? "Recolección" : "Entrega"} — ${stop.offer_id}<br>` +
-                `ETA: ${stop.eta}s`
+              `<div style="font-family: sans-serif;">
+                 <b>${style.label} · Parada ${index + 1}</b><br>
+                 <span style="color: ${offerColor}; font-weight: bold;">
+                   ${isPickup ? "📦 Recolección (P)" : "📍 Entrega (E)"}
+                 </span> — Pedido: ${stop.offer_id}<br>
+                 ETA: ${stop.eta}s
+               </div>`
             )
             .addTo(layerGroup);
 
           bounds.push(coord);
         });
 
-        // Obtener ruta vial por calles con OSRM
+        // Trazado de ruta
         let lineCoords: LatLng[] = [validPosition, ...resolvedStops.map((s) => s.coord)];
         const osrmCoords = await fetchOsrmRoute(lineCoords);
         if (osrmCoords) {
@@ -246,31 +232,22 @@ export function Map({ agentState, baselineState, roadEvents }: MapProps) {
         }).addTo(layerGroup);
       }
 
-      // Renderizar eventos viales si existen
+      // Eventos viales
       roadEvents?.forEach((event) => {
         const style = ROAD_EVENT_STYLE[event.type];
         const tooltip = `${style.label}${event.multiplier ? ` ×${event.multiplier}` : ""}`;
 
         if (isMultiLocation(event.location)) {
           L.polyline(event.location, {
-            color: style.color,
-            weight: 6,
-            opacity: 0.6,
+            color: style.color, weight: 6, opacity: 0.6,
             dashArray: event.type === "closure" ? "4, 6" : undefined,
-          })
-            .bindTooltip(tooltip)
-            .addTo(layerGroup);
+          }).bindTooltip(tooltip).addTo(layerGroup);
           bounds.push(...event.location);
         } else {
           L.circle(event.location, {
-            radius: 250,
-            color: style.color,
-            fillColor: style.color,
-            fillOpacity: 0.2,
-            weight: 2,
-          })
-            .bindTooltip(tooltip)
-            .addTo(layerGroup);
+            radius: 250, color: style.color, fillColor: style.color,
+            fillOpacity: 0.2, weight: 2,
+          }).bindTooltip(tooltip).addTo(layerGroup);
           bounds.push(event.location);
         }
       });
@@ -282,19 +259,37 @@ export function Map({ agentState, baselineState, roadEvents }: MapProps) {
   }, [isMapReady, agentState, baselineState, roadEvents]);
 
   return (
-    <div className="relative h-full min-h-100 w-full overflow-hidden rounded-lg border border-gray-200 shadow-inner dark:border-gray-800">
+    <div className="relative h-full min-h-[400px] w-full overflow-hidden rounded-lg border border-gray-200 shadow-inner dark:border-gray-800">
       <div ref={mapRef} className="absolute inset-0 z-0 h-full w-full" />
 
-      <div className="absolute bottom-3 left-3 z-1000 flex gap-3 rounded-md border border-gray-200 bg-white/95 px-3 py-2 text-xs shadow-sm">
-        {Object.values(ROUTE_STYLE).map((style) => (
-          <div key={style.label} className="flex items-center gap-1.5">
-            <span
-              className="inline-block h-2 w-4 rounded-full"
-              style={{ backgroundColor: style.color }}
-            />
-            <span className="text-gray-600">{style.label}</span>
+      {/* LEYENDA MEJORADA */}
+      <div className="absolute bottom-3 left-3 z-[1000] flex gap-4 rounded-md border border-gray-200 bg-white/95 px-4 py-2 text-xs shadow-sm dark:bg-zinc-900/95 dark:border-zinc-700">
+        
+        {/* Leyenda de Rutas */}
+        <div className="flex gap-3">
+          {Object.values(ROUTE_STYLE).map((style) => (
+            <div key={style.label} className="flex items-center gap-1.5">
+              <span className="inline-block h-2 w-4 rounded-full" style={{ backgroundColor: style.color }} />
+              <span className="text-gray-600 dark:text-gray-300 font-medium">{style.label}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Separador */}
+        <div className="w-px bg-gray-300 dark:bg-gray-600"></div>
+
+        {/* Leyenda de Paradas */}
+        <div className="flex gap-3">
+          <div className="flex items-center gap-1.5">
+            <span className="flex h-4 w-4 items-center justify-center rounded bg-gray-500 text-[10px] text-white font-bold">P</span>
+            <span className="text-gray-600 dark:text-gray-300">Recolección</span>
           </div>
-        ))}
+          <div className="flex items-center gap-1.5">
+            <span className="flex h-4 w-4 items-center justify-center rounded border-2 border-gray-500 bg-white dark:bg-transparent text-[10px] text-gray-500 font-bold">E</span>
+            <span className="text-gray-600 dark:text-gray-300">Entrega</span>
+          </div>
+        </div>
+
       </div>
     </div>
   );
