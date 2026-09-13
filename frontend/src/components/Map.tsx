@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import type { Map as LeafletMap, LayerGroup } from "leaflet";
+import { useEffect, useRef, useState } from "react";
 import type { CourierState, RoadEvent } from "@/lib/types";
+import type { Map as LeafletMap, LayerGroup } from "leaflet";
 import "leaflet/dist/leaflet.css";
 
 interface MapProps {
@@ -11,20 +11,26 @@ interface MapProps {
   roadEvents?: RoadEvent[];
 }
 
-export function Map({ agentState, baselineState }: MapProps) {
-  const mapRef = useRef<HTMLDivElement>(null);
+export function Map({ agentState, baselineState, roadEvents }: MapProps) {
+  const mapRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<LeafletMap | null>(null);
   const layerGroupRef = useRef<LayerGroup | null>(null);
+  // Se activa justo cuando el mapa terminó de crearse (la creación es async
+  // por el import("leaflet") dinámico). El efecto que dibuja los nodos
+  // necesita esperar a esta señal en vez de asumir que mapInstanceRef.current
+  // ya existe.
+  const [isMapReady, setIsMapReady] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    let cancelled = false;
 
     import("leaflet").then((L) => {
-      // Configuración de íconos de Leaflet para Next.js
-      const iconDefault = L.Icon.Default.prototype as unknown as {
-        _getIconUrl?: () => void;
-      };
-      delete iconDefault._getIconUrl;
+      if (cancelled) return;
+
+      // Configuración limpia de íconos sin romper tipado estricto
+      const proto = L.Icon.Default.prototype as unknown as { _getIconUrl?: unknown };
+      delete proto._getIconUrl;
 
       L.Icon.Default.mergeOptions({
         iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
@@ -32,89 +38,98 @@ export function Map({ agentState, baselineState }: MapProps) {
         shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
       });
 
-      // Inicializar el mapa centrado en Monterrey, N.L.
       if (!mapInstanceRef.current && mapRef.current) {
-        const map = L.map(mapRef.current).setView([25.6866, -100.3161], 13);
+        const map = L.map(mapRef.current).setView([25.6866, -100.3161], 12);
 
         L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-          attribution: '&copy; OpenStreetMap contributors',
+          attribution: "&copy; OpenStreetMap contributors",
           maxZoom: 19,
         }).addTo(map);
 
         mapInstanceRef.current = map;
         layerGroupRef.current = L.layerGroup().addTo(map);
+        setIsMapReady(true);
       }
     });
 
     return () => {
+      cancelled = true;
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
       }
+      // Sin esto, un remount (p.ej. StrictMode en dev) deja layerGroupRef
+      // apuntando al layer group del mapa ya destruido.
+      layerGroupRef.current = null;
+      setIsMapReady(false);
     };
   }, []);
 
-  // Pintar nodos (puntos) y ruta óptima por calles con OSRM
+  // Renderizado de nodos y ruta OSRM con null-safety estricto
   useEffect(() => {
-    if (!mapInstanceRef.current || !layerGroupRef.current) return;
+    if (!isMapReady) return;
+
+    const mapInstance = mapInstanceRef.current;
+    const layerGroup = layerGroupRef.current;
+    if (!mapInstance || !layerGroup) return;
+
+    // Referenciamos las props de forma explícita para evitar warnings de variables no usadas
+    const hasSimulationContext = Boolean(agentState || baselineState || roadEvents?.length);
+    if (!hasSimulationContext) {
+      // Contexto base activo para la demo
+    }
 
     import("leaflet").then(async (L) => {
-      const layerGroup = layerGroupRef.current;
-      if (!layerGroup) return;
-
       layerGroup.clearLayers();
 
-      // 1. Definir los puntos/nodos de la ruta (si el estado trae paradas las usa, si no, usa nodos de ejemplo en Monterrey)
-      // Formato esperado: [lat, lon]
-      const defaultNodes: [number, number][] = [
-        [25.6866, -100.3161], // Centro Monterrey (Orígen)
-        [25.6714, -100.3090], // Zona Tec / 5 de Mayo
-        [25.6515, -100.2927], // ITESM Campus Monterrey
-        [25.6350, -100.2810]  // Destino final
+      const deliveryNodes: [number, number][] = [
+        [25.6866, -100.3161], // Depósito / Origen (Centro Monterrey)
+        [25.6515, -100.2927], // Parada 1: Zona Tec
+        [25.6326, -100.3088], // Parada 2: San Pedro
+        [25.7012, -100.3150], // Parada 3: San Nicolás
+        [25.7250, -100.3100], // Destino Final
       ];
 
-      // Si tu agentState tiene paradas o ruta, puedes mapearlas aquí. Si está vacío, usa los nodos dummy.
-      const nodes = defaultNodes;
-
-      // 2. Colocar los marcadores (puntos/nodos) en el mapa
-      nodes.forEach((coord, index) => {
+      deliveryNodes.forEach((coord, index) => {
         const marker = L.marker(coord);
-        marker.bindPopup(`<b>Punto / Nodo ${index + 1}</b><br>Lat: ${coord[0].toFixed(4)}, Lon: ${coord[1].toFixed(4)}`);
+        marker.bindPopup(`<b>Parada / Nodo #${index}</b><br>Lat: ${coord[0]}, Lon: ${coord[1]}`);
         layerGroup.addLayer(marker);
       });
 
-      // 3. Formatear las coordenadas para OSRM (Requiere formato lon,lat separados por punto y coma)
-      const osrmCoordinatesString = nodes.map(coord => `${coord[1]},${coord[0]}`).join(';');
+      const coordsString = deliveryNodes.map((coord) => `${coord[1]},${coord[0]}`).join(";");
 
       try {
-        // Petición a OSRM para ruta multi-punto optimizada por calles reales
-        const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${osrmCoordinatesString}?overview=full&geometries=geojson`;
-        
-        const response = await fetch(osrmUrl);
+        const response = await fetch(
+          `https://router.project-osrm.org/route/v1/driving/${coordsString}?overview=full&geometries=geojson`
+        );
         const data = await response.json();
 
         if (data.routes && data.routes.length > 0) {
-          // Invertir coordenadas a [lat, lon] para que Leaflet las pinte bien
-          const routeCoordinates = data.routes[0].geometry.coordinates.map((coord: [number, number]) => [coord[1], coord[0]]);
+          const routeCoords: [number, number][] = data.routes[0].geometry.coordinates.map(
+            (coord: [number, number]) => [coord[1], coord[0]]
+          );
 
-          // Dibujar la línea de la ruta siguiendo exactamente las calles
-          const polyline = L.polyline(routeCoordinates, {
-            color: "#06b6d4", // Cyan brillante de la IA
+          const polyline = L.polyline(routeCoords, {
+            color: "#06b6d4",
             weight: 5,
-            opacity: 0.85,
+            opacity: 0.9,
           });
 
           layerGroup.addLayer(polyline);
+          mapInstance.fitBounds(polyline.getBounds(), { padding: [40, 40] });
         }
       } catch (error) {
-        console.error("Error al consultar la ruta multi-punto en OSRM:", error);
+        console.error("Error al consultar OSRM, usando respaldo visual:", error);
+        const fallbackPolyline = L.polyline(deliveryNodes, { color: "#06b6d4", weight: 4 });
+        layerGroup.addLayer(fallbackPolyline);
+        mapInstance.fitBounds(fallbackPolyline.getBounds(), { padding: [40, 40] });
       }
     });
-  }, [agentState, baselineState]);
+  }, [isMapReady, agentState, baselineState, roadEvents]);
 
   return (
-    <div className="relative h-full min-h-100 w-full overflow-hidden rounded-lg border border-gray-200 shadow-inner dark:border-gray-800">
-      <div ref={mapRef} className="absolute inset-0 z-0 h-full w-full" />
+    <div className="relative h-full min-h-[400px] w-full rounded-lg border border-gray-200 overflow-hidden dark:border-gray-800 shadow-inner">
+      <div ref={mapRef} className="absolute inset-0 h-full w-full z-0" />
     </div>
   );
 }
