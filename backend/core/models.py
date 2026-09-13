@@ -15,6 +15,12 @@ Cambios v2 (Abraham, P0.2 / P0.5):
   `vehicle` (perfil activo), necesarios para P0.1 (posicion real en el mapa
   y comparacion fin-de-turno vs ETA final).
 - EventLogEntry: estructura de entrada del event log JSONL (P1.1).
+
+Corregido tras el merge a B5 (ver docs/03_Integracion_API_Decide.md): los 8
+EventType ahora son EXACTAMENTE los que exige
+student-materials/courier/event_log_schema.json (antes eran un vocabulario
+interno distinto -- tick/offer_received/... -- que hacia fallar
+validate_format.py --event-log linea por linea).
 """
 
 from __future__ import annotations
@@ -26,19 +32,21 @@ from typing import Literal
 
 
 # ---------------------------------------------------------------------------
-# Tipos de evento del log (P1.1)
+# Tipos de evento del log (P1.1) -- deben coincidir 1:1 con
+# student-materials/courier/event_log_schema.json (REQUIRED_BY_EVENT en su
+# validate_format.py). No renombrar sin actualizar tambien ese contrato.
 # ---------------------------------------------------------------------------
 
 class EventType(str, Enum):
-    """Ocho tipos de evento que el tick() emite al JSONL."""
-    TICK = "tick"
-    OFFER_RECEIVED = "offer_received"
-    OFFER_ACCEPTED = "offer_accepted"
-    OFFER_REJECTED = "offer_rejected"
-    STOP_COMPLETED = "stop_completed"    # pickup o dropoff terminado
-    ROAD_EVENT = "road_event"
+    """Los 8 tipos de evento del contrato oficial."""
+    SHIFT_START = "shift_start"
+    ORDER_OFFERED = "order_offered"
+    DECISION = "decision"
+    POSITION_UPDATE = "position_update"
+    EARNINGS_UPDATE = "earnings_update"
+    SHOCK = "shock"
+    STRATEGY_UPDATE = "strategy_update"
     SHIFT_END = "shift_end"
-    ROUTE_OPTIMIZED = "route_optimized"
 
 
 # ---------------------------------------------------------------------------
@@ -301,13 +309,18 @@ class CourierState:
 
 @dataclass
 class EventLogEntry:
-    """Una línea del event log JSONL emitido por tick().
+    """Una línea del event log JSONL, en construcción (ver SimulationEngine._log).
 
-    Se serializa con dataclasses.asdict() + json.dumps() antes de escribir.
-    Ocho tipos (ver EventType): tick, offer_received, offer_accepted,
-    offer_rejected, stop_completed, road_event, shift_end, route_optimized.
+    Al serializar se APLANA: la línea final es
+    `{"event": event_type.value, "sim_time": ..., **payload, "agent_id": ...}`
+    -- no un objeto anidado -- porque asi lo exige
+    student-materials/courier/event_log_schema.json (campos al nivel raiz,
+    p.ej. `order_offered.zone_pickup`, no `order_offered.payload.zone_pickup`).
+
+    Ocho tipos (ver EventType): shift_start, order_offered, decision,
+    position_update, earnings_update, shock, strategy_update, shift_end.
     """
     event_type: EventType
-    sim_time: float                         # minuto absoluto del turno
-    payload: dict                           # datos específicos del evento
-    agent_id: str = "ai"                    # "ai" o "baseline"
+    sim_time: str                           # ISO 8601, no minuto float
+    payload: dict                           # campos especificos del evento, se aplanan al nivel raiz
+    agent_id: str = "ai"                    # "ai" o "baseline" -- campo extra, no forma parte del contrato oficial pero no lo rompe

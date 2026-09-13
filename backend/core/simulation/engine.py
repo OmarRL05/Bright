@@ -17,6 +17,30 @@ Cambios v2 (Abraham, P0.1 / P0.2 / P1.1):
   ya no queda hardcodeado en 0.5.
 - Se añaden más tipos de eventos de entorno (surge localizado con factor
   aleatorio, cierres de tramo multi-punto).
+
+Corregido tras el merge a B5 (ver docs/03_Integracion_API_Decide.md): el
+event log JSONL ahora emite EXACTAMENTE los 8 tipos y campos que exige
+student-materials/courier/event_log_schema.json -- antes usaba un
+vocabulario interno (tick/offer_received/offer_accepted/offer_rejected/
+stop_completed/road_event/route_optimized) que no era ninguno de los 8
+oficiales y que `validate_format.py --event-log` rechazaba linea por linea.
+Consecuencias concretas de ese fix:
+- `sim_time` se serializa como ISO 8601 (no como minuto float): se ancla en
+  `shift_start_time` (parametro nuevo, determinista -- nunca
+  `datetime.now()`, para no romper el replay del protocolo de evaluacion).
+- `zone_pickup`/`zone_dropoff` de cada oferta se resuelven a `Zone.zone_id`
+  via `zone_map.nearest_zone(coord)` -- el contrato oficial identifica
+  zonas con enteros, no con coordenadas.
+- El tick de reloj (antes un evento `tick` propio) ya no se loguea: el
+  contrato oficial no tiene ese tipo de evento, y cada `order_offered`/
+  `shock` ya lleva su propio `sim_time`.
+- `log_stop_completed`/`log_route_optimized` (antes `stop_completed`/
+  `route_optimized`) se quitaron: no tienen equivalente oficial y nada en
+  produccion los llamaba. `log_offer_decision` ahora emite el evento
+  `decision` unico (ACCEPT/SKIP), no dos eventos separados.
+- `position_update`, `earnings_update` y `strategy_update` siguen sin
+  productor: le corresponden a CourierStateManager/DecisionEngine (P0.1/
+  Bloque 3), no a este generador de stream. No se inventaron aqui.
 """
 
 from __future__ import annotations
@@ -24,8 +48,7 @@ from __future__ import annotations
 import json
 import random
 from collections.abc import Iterator
-from dataclasses import asdict
-from pathlib import Path
+from datetime import datetime, timedelta
 from typing import IO
 
 from core.models import (
@@ -39,6 +62,14 @@ from core.models import (
     VEHICLE_PROFILES,
     ZoneMap,
 )
+from core.routing.euclidean import EuclideanDistanceProvider
+
+# Ancla determinista del reloj de simulacion -- NUNCA datetime.now() (el
+# protocolo de evaluacion corre replay y compara decisiones byte a byte,
+# seccion 6; leer el reloj de pared rompe esa garantia). Solo importa como
+# punto de partida para producir timestamps ISO legibles; el offset en
+# minutos (self.current_time) sigue siendo la fuente de verdad interna.
+DEFAULT_SHIFT_START_TIME = datetime(2026, 1, 1, 8, 0, 0)
 
 
 class SimulationEngine:
@@ -51,17 +82,25 @@ class SimulationEngine:
         vehicle_type: VehicleType = VehicleType.MOTO,
         agent_id: str = "ai",
         log_file: IO[str] | None = None,
+        shift_start_time: datetime = DEFAULT_SHIFT_START_TIME,
+        start_location_zone: int | None = None,
     ) -> None:
         """
         Args:
-            seed:           Semilla fija para reproducibilidad del stream.
-            shift_duration: Duración del turno en minutos.
-            zone_map:       Catálogo de zonas. None → DEFAULT_ZONE_MAP.
-            vehicle_type:   Perfil de vehículo (moto/car/bike, P0.5).
-            agent_id:       "ai" o "baseline" — etiqueta en el event log.
-            log_file:       Archivo abierto para escribir el log JSONL (P1.1).
-                            None → no se escribe log. Caller es responsable
-                            de abrir/cerrar el archivo.
+            seed:                Semilla fija para reproducibilidad del stream.
+            shift_duration:      Duración del turno en minutos.
+            zone_map:            Catálogo de zonas. None → DEFAULT_ZONE_MAP.
+            vehicle_type:        Perfil de vehículo (moto/car/bike, P0.5).
+            agent_id:            "ai" o "baseline" — etiqueta en el event log.
+            log_file:            Archivo abierto para escribir el log JSONL
+                                  (P1.1). None → no se escribe log. Caller es
+                                  responsable de abrir/cerrar el archivo.
+            shift_start_time:    Ancla determinista para convertir minutos de
+                                  turno a `sim_time` ISO 8601. Fija por
+                                  defecto -- nunca leer el reloj de pared.
+            start_location_zone: zone_id donde arranca el courier (evento
+                                  shift_start). None → primera zona de
+                                  zone_map.
         """
         self.seed = seed
         self.shift_duration = shift_duration
@@ -70,6 +109,11 @@ class SimulationEngine:
         self.vehicle: VehicleProfile = VEHICLE_PROFILES[vehicle_type]
         self.agent_id = agent_id
         self._log_file = log_file
+        self.shift_start_time = shift_start_time
+        self.start_location_zone = (
+            start_location_zone if start_location_zone is not None else self.zone_map.zones[0].zone_id
+        )
+        self._distance = EuclideanDistanceProvider()
 
         self.current_time = 0.0
         self.offer_counter = 0
@@ -77,6 +121,10 @@ class SimulationEngine:
         # Mantener la lista de coordenadas para que los tests de retrocompatibilidad
         # que accedan a _zones sigan funcionando.
         self._zones = self.zone_map.coords
+
+    def _iso(self, minute_offset: float) -> str:
+        """`sim_time` ISO 8601 para un offset en minutos desde el inicio del turno."""
+        return (self.shift_start_time + timedelta(minutes=minute_offset)).isoformat()
 
     # ------------------------------------------------------------------
     # Generadores de eventos individuales
@@ -139,55 +187,85 @@ class SimulationEngine:
         )
 
     # ------------------------------------------------------------------
-    # P1.1 — Event log JSONL
+    # P1.1 — Event log JSONL (contrato oficial)
     # ------------------------------------------------------------------
 
-    def _log(self, event_type: EventType, payload: dict) -> None:
-        """Escribe una entrada al log JSONL si hay archivo configurado."""
+    def _log(self, event_type: EventType, sim_time_min: float, payload: dict) -> None:
+        """Escribe una linea JSONL plana si hay archivo configurado.
+
+        La linea final es `{"event": ..., "sim_time": ..., **payload,
+        "agent_id": ...}` -- aplanada, tal como exige
+        event_log_schema.json (ver nota de modulo).
+        """
         if self._log_file is None:
             return
         entry = EventLogEntry(
             event_type=event_type,
-            sim_time=self.current_time,
+            sim_time=self._iso(sim_time_min),
             payload=payload,
             agent_id=self.agent_id,
         )
-        # asdict() convierte dataclasses anidados recursivamente
-        record = asdict(entry)
-        # EventType es un Enum — serializar como string
-        record["event_type"] = entry.event_type.value
+        record = {
+            "event": entry.event_type.value,
+            "sim_time": entry.sim_time,
+            **entry.payload,
+            "agent_id": entry.agent_id,
+        }
         self._log_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    def _log_shift_start(self) -> None:
+        self._log(EventType.SHIFT_START, 0.0, {
+            "seed": self.seed,
+            "shift_hours": self.shift_duration / 60.0,
+            "vehicle": self.vehicle.type.value,
+            "start_location_zone": self.start_location_zone,
+            "shift_end_time": self._iso(self.shift_duration),
+            "fuel_mxn_per_km": self.vehicle.cost_per_km,
+        })
+
+    def _log_order_offered(self, offer: Offer) -> None:
+        pickup_zone = self.zone_map.nearest_zone(offer.pickup)
+        dropoff_zone = self.zone_map.nearest_zone(offer.dropoff)
+        self._log(EventType.ORDER_OFFERED, self.current_time, {
+            "order_id": offer.id,
+            "zone_pickup": pickup_zone.zone_id,
+            "zone_dropoff": dropoff_zone.zone_id,
+            "distance_pickup_km": 0.0,  # deadhead: sin posicion del courier en este generador (ver nota de modulo)
+            "distance_delivery_km": self._distance.travel_distance(offer.pickup, offer.dropoff),
+            "base_pay_mxn": offer.pay,
+            "surge_multiplier": 1.0,  # TODO: aplicar surge activo por zona si se trackea (ver _generate_road_event)
+            "vehicle": self.vehicle.type.value,
+        })
+
+    def _log_shock(self, event: RoadEvent) -> None:
+        location = event.location[0] if isinstance(event.location, list) else event.location
+        zone = self.zone_map.nearest_zone(location)
+        shock_type = "surge" if event.type == "surge" else ("closure" if event.type == "closure" else "delay")
+        self._log(EventType.SHOCK, self.current_time, {
+            "shock_type": shock_type,
+            "zone": zone.zone_id,
+            **({"multiplier": event.multiplier} if event.multiplier is not None else {}),
+        })
 
     def log_offer_decision(
         self,
         offer: Offer,
         accepted: bool,
         reason: str,
+        latency_ms: float = 0.0,
     ) -> None:
         """Llamado por Bloque 3 (DecisionEngine) después de evaluar una oferta.
 
-        Permite que el motor de decisión escriba OFFER_ACCEPTED / OFFER_REJECTED
-        en el mismo log sin conocer los detalles de serialización.
+        Emite el evento oficial `decision` (ACCEPT/SKIP) -- antes eran dos
+        eventos internos (offer_accepted/offer_rejected) sin equivalente en
+        event_log_schema.json.
         """
-        event_type = EventType.OFFER_ACCEPTED if accepted else EventType.OFFER_REJECTED
-        self._log(event_type, {
-            "offer_id": offer.id,
-            "pay": offer.pay,
-            "pickup": offer.pickup,
-            "dropoff": offer.dropoff,
+        self._log(EventType.DECISION, self.current_time, {
+            "order_id": offer.id,
+            "decision": "ACCEPT" if accepted else "SKIP",
             "reason": reason,
+            "latency_ms": latency_ms,
         })
-
-    def log_stop_completed(self, offer_id: str, kind: str) -> None:
-        """Llamado cuando el courier completa un pickup o dropoff."""
-        self._log(EventType.STOP_COMPLETED, {
-            "offer_id": offer_id,
-            "kind": kind,
-        })
-
-    def log_route_optimized(self, route_length: int) -> None:
-        """Llamado cuando Bloque 4 aplica una ruta optimizada."""
-        self._log(EventType.ROUTE_OPTIMIZED, {"route_stops": route_length})
 
     # ------------------------------------------------------------------
     # Loop principal de simulación
@@ -197,43 +275,31 @@ class SimulationEngine:
         """Genera el stream reproducible de eventos del turno.
 
         Retrocompatible con la versión v1: sigue siendo un Iterator de
-        Offer | RoadEvent, y ahora también escribe el log JSONL si se
-        configuró log_file en el constructor.
+        Offer | RoadEvent, y ahora también escribe el log JSONL oficial si
+        se configuró log_file en el constructor.
         """
+        self._log_shift_start()
+
         while self.current_time < self.shift_duration:
             self.current_time += 1
-
-            # Log del tick de reloj
-            self._log(EventType.TICK, {
-                "sim_time": self.current_time,
-                "time_remaining": self.shift_duration - self.current_time,
-            })
 
             chance = self._rng.random()
 
             # 40% probabilidad de nueva oferta
             if chance < 0.40:
                 offer = self._generate_offer()
-                self._log(EventType.OFFER_RECEIVED, {
-                    "offer_id": offer.id,
-                    "pay": offer.pay,
-                    "pickup": offer.pickup,
-                    "dropoff": offer.dropoff,
-                    "demand_percentile": offer.demand_percentile,
-                })
+                self._log_order_offered(offer)
                 yield offer
 
             # 10% probabilidad de evento externo
             elif chance < 0.50:
                 event = self._generate_road_event()
-                self._log(EventType.ROAD_EVENT, {
-                    "type": event.type,
-                    "location": event.location,
-                    "multiplier": event.multiplier,
-                })
+                self._log_shock(event)
                 yield event
 
-        # Fin del turno
-        self._log(EventType.SHIFT_END, {
-            "total_time": self.shift_duration,
+        # Fin del turno -- orders_offered es lo unico que este generador
+        # conoce por si solo; orders_completed/earnings_mxn/safety_violations
+        # viven en CourierStateManager, no aqui.
+        self._log(EventType.SHIFT_END, self.shift_duration, {
+            "orders_offered": self.offer_counter,
         })

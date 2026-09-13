@@ -13,13 +13,13 @@ from __future__ import annotations
 
 import io
 import json
+from pathlib import Path
 
 import pytest
 
 from core.models import (
     DEFAULT_ZONE_MAP,
     DistanceMatrix,
-    EventType,
     Offer,
     RouteStop,
     VehicleProfile,
@@ -359,8 +359,22 @@ class TestValidateWindows:
 
 
 # ===========================================================================
-# P1.1 — Event log JSONL (8 tipos de evento)
+# P1.1 — Event log JSONL (8 tipos de evento, contrato oficial)
+#
+# Corregido tras el merge a B5: el vocabulario interno original (tick,
+# offer_received, offer_accepted/offer_rejected, stop_completed, road_event,
+# route_optimized) no era ninguno de los 8 tipos de
+# student-materials/courier/event_log_schema.json y hacia fallar
+# validate_format.py --event-log en cada linea. Estos tests verifican el
+# contrato oficial directamente -- test_log_passes_official_validator corre
+# el validador real del reto, no una copia.
 # ===========================================================================
+
+OFFICIAL_EVENT_TYPES = {
+    "shift_start", "order_offered", "decision", "position_update",
+    "earnings_update", "shock", "strategy_update", "shift_end",
+}
+
 
 class TestEventLog:
     def _run_engine_with_log(self, seed: int = 42, shift_duration: float = 30.0):
@@ -373,93 +387,114 @@ class TestEventLog:
         events = list(engine.event_stream())
         return log_buf, events
 
+    def _lines(self, log_buf) -> list[dict]:
+        return [json.loads(l) for l in log_buf.getvalue().splitlines() if l.strip()]
+
     def test_log_is_valid_jsonl(self):
         log_buf, _ = self._run_engine_with_log()
-        lines = [l for l in log_buf.getvalue().splitlines() if l.strip()]
-        for line in lines:
-            obj = json.loads(line)  # no debe lanzar
-            assert "event_type" in obj
+        for obj in self._lines(log_buf):
+            assert "event" in obj
             assert "sim_time" in obj
-            assert "payload" in obj
-            assert "agent_id" in obj
+            assert obj["event"] in OFFICIAL_EVENT_TYPES
 
-    def test_tick_events_present(self):
+    def test_sim_time_is_iso8601(self):
+        """El contrato oficial exige datetime ISO 8601, no minutos float."""
+        import datetime as dt
         log_buf, _ = self._run_engine_with_log(shift_duration=5.0)
-        types = {json.loads(l)["event_type"] for l in log_buf.getvalue().splitlines() if l.strip()}
-        assert EventType.TICK.value in types
+        for obj in self._lines(log_buf):
+            dt.datetime.fromisoformat(obj["sim_time"])  # no debe lanzar
+
+    def test_shift_start_is_first_event(self):
+        log_buf, _ = self._run_engine_with_log(shift_duration=5.0)
+        first = self._lines(log_buf)[0]
+        assert first["event"] == "shift_start"
+        for key in ("seed", "shift_hours", "vehicle", "start_location_zone", "shift_end_time"):
+            assert key in first
 
     def test_shift_end_event_last(self):
         log_buf, _ = self._run_engine_with_log(shift_duration=5.0)
-        lines = [l for l in log_buf.getvalue().splitlines() if l.strip()]
-        last = json.loads(lines[-1])
-        assert last["event_type"] == EventType.SHIFT_END.value
+        last = self._lines(log_buf)[-1]
+        assert last["event"] == "shift_end"
 
-    def test_offer_received_events_present(self):
+    def test_order_offered_events_present_with_required_fields(self):
         """Con seed 42 y 60 min hay al menos una oferta generada."""
-        log_buf, events = self._run_engine_with_log(shift_duration=60.0)
-        types = [json.loads(l)["event_type"] for l in log_buf.getvalue().splitlines() if l.strip()]
-        assert EventType.OFFER_RECEIVED.value in types
-
-    def test_offer_received_payload_fields(self):
         log_buf, _ = self._run_engine_with_log(shift_duration=60.0)
-        for line in log_buf.getvalue().splitlines():
-            obj = json.loads(line)
-            if obj["event_type"] == EventType.OFFER_RECEIVED.value:
-                assert "offer_id" in obj["payload"]
-                assert "pay" in obj["payload"]
-                assert "pickup" in obj["payload"]
-                assert "demand_percentile" in obj["payload"]
-                break  # suficiente con el primero
+        order_offered = [obj for obj in self._lines(log_buf) if obj["event"] == "order_offered"]
+        assert order_offered
+        first = order_offered[0]
+        for key in ("order_id", "zone_pickup", "zone_dropoff", "distance_pickup_km",
+                    "distance_delivery_km", "base_pay_mxn", "surge_multiplier", "vehicle"):
+            assert key in first
+        assert isinstance(first["zone_pickup"], int)
+        assert isinstance(first["zone_dropoff"], int)
 
-    def test_log_offer_decision_accepted(self):
+    def test_shock_events_have_shock_type(self):
+        """Con seed 3 y 200 min se generan varios road events (shock)."""
+        log_buf, _ = self._run_engine_with_log(seed=3, shift_duration=200.0)
+        shocks = [obj for obj in self._lines(log_buf) if obj["event"] == "shock"]
+        assert shocks
+        for shock in shocks:
+            assert "shock_type" in shock
+            assert shock["shock_type"] in {"surge", "closure", "rain", "delay"}
+
+    def test_log_offer_decision_emits_decision_event(self):
         log_buf = io.StringIO()
         engine = SimulationEngine(seed=1, shift_duration=1.0, log_file=log_buf)
         offer = make_offer()
-        engine.log_offer_decision(offer, accepted=True, reason="test reason")
-        lines = [l for l in log_buf.getvalue().splitlines() if l.strip()]
-        assert len(lines) == 1
-        obj = json.loads(lines[0])
-        assert obj["event_type"] == EventType.OFFER_ACCEPTED.value
-        assert obj["payload"]["reason"] == "test reason"
+        engine.log_offer_decision(offer, accepted=True, reason="test reason", latency_ms=2.5)
+        objs = self._lines(log_buf)
+        assert len(objs) == 1  # log_offer_decision no pasa por event_stream(), no hay shift_start
+        decision = objs[-1]
+        assert decision["event"] == "decision"
+        assert decision["order_id"] == offer.id
+        assert decision["decision"] == "ACCEPT"
+        assert decision["reason"] == "test reason"
+        assert decision["latency_ms"] == 2.5
 
-    def test_log_offer_decision_rejected(self):
+    def test_log_offer_decision_rejected_uses_skip(self):
         log_buf = io.StringIO()
         engine = SimulationEngine(seed=1, shift_duration=1.0, log_file=log_buf)
         offer = make_offer()
         engine.log_offer_decision(offer, accepted=False, reason="zona fria")
-        obj = json.loads(log_buf.getvalue().strip())
-        assert obj["event_type"] == EventType.OFFER_REJECTED.value
-
-    def test_log_stop_completed(self):
-        log_buf = io.StringIO()
-        engine = SimulationEngine(seed=1, shift_duration=1.0, log_file=log_buf)
-        engine.log_stop_completed("o1", "pickup")
-        obj = json.loads(log_buf.getvalue().strip())
-        assert obj["event_type"] == EventType.STOP_COMPLETED.value
-        assert obj["payload"]["kind"] == "pickup"
-
-    def test_log_route_optimized(self):
-        log_buf = io.StringIO()
-        engine = SimulationEngine(seed=1, shift_duration=1.0, log_file=log_buf)
-        engine.log_route_optimized(route_length=4)
-        obj = json.loads(log_buf.getvalue().strip())
-        assert obj["event_type"] == EventType.ROUTE_OPTIMIZED.value
-        assert obj["payload"]["route_stops"] == 4
+        decision = self._lines(log_buf)[-1]
+        assert decision["decision"] == "SKIP"
 
     def test_no_log_when_no_file(self):
         """Sin log_file configurado no debe lanzar ninguna excepción."""
         engine = SimulationEngine(seed=42, shift_duration=5.0, log_file=None)
-        events = list(engine.event_stream())
+        list(engine.event_stream())
         # El hecho de completar sin error es el assert
 
     def test_agent_id_propagated(self):
         log_buf = io.StringIO()
         engine = SimulationEngine(seed=42, shift_duration=5.0, log_file=log_buf, agent_id="baseline")
         list(engine.event_stream())
-        for line in log_buf.getvalue().splitlines():
-            if line.strip():
-                obj = json.loads(line)
-                assert obj["agent_id"] == "baseline"
+        for obj in self._lines(log_buf):
+            assert obj["agent_id"] == "baseline"
+
+    def test_log_passes_official_validator(self, tmp_path):
+        """Corre el validador REAL del reto (no una copia) contra un log generado.
+
+        Es la garantia fuerte de que el formato es correcto -- no solo que
+        "parece" correcto segun nuestra propia lectura del schema.
+        """
+        import subprocess
+        import sys
+
+        log_buf, _ = self._run_engine_with_log(seed=7, shift_duration=120.0)
+        log_path = tmp_path / "shift.jsonl"
+        log_path.write_text(log_buf.getvalue())
+
+        validator = (
+            Path(__file__).resolve().parents[2] / "student-materials" / "courier" / "validate_format.py"
+        )
+        assert validator.exists(), f"no se encontro el validador oficial en {validator}"
+
+        result = subprocess.run(
+            [sys.executable, str(validator), "--event-log", str(log_path)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
 
 
 # ===========================================================================

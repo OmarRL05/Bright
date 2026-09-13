@@ -10,9 +10,10 @@ Para: **Abraham** (P0.1, P0.2, P0.5, P0.6, P1.1) y **Omar** (P0.3, P1.4, P1.5, P
 
 **Actualización (merge de `abraham/bloques-1-2` a `B5`):** P0.1, P0.2, P0.5,
 P0.6 y P1.1 ya están implementados por Abraham y mezclados con este trabajo.
-Se reconciliaron dos cosas antes de dar por buena la mezcla (sección 1) y
-queda **un mismatch real sin resolver** en P1.1 (sección 1, al final) —
-léanlo antes de asumir que el event log ya pasa el validador oficial.
+Se reconciliaron dos cosas antes de dar por buena la mezcla (sección 1), y el
+mismatch de nombres de evento de P1.1 que se había quedado pendiente ya se
+corrigió y se verificó contra el validador oficial real (sección 1, al
+final).
 
 ## 0. Lo más importante: `/decide` es autocontenido, no llama a `CourierStateManager`
 
@@ -71,31 +72,39 @@ para engancharlo, pero no es necesario para pasar `validate_format.py`.
 **P0.6 (validar ventanas tras recalcular ETAs):** confirmado, vive en
 `CourierStateManager.validate_windows()`/`tick()` — no afecta a `/decide`.
 
-**P1.1 (event log JSONL) — mismatch real, sin resolver todavía:** tu
-`EventType` (`tick`, `offer_received`, `offer_accepted`, `offer_rejected`,
-`stop_completed`, `road_event`, `shift_end`, `route_optimized`) **no
-corresponde** a los 8 tipos que exige
-`student-materials/courier/event_log_schema.json`
-(`shift_start`, `order_offered`, `decision`, `position_update`,
-`earnings_update`, `shock`, `strategy_update`, `shift_end`) — ni los nombres
-ni, en el único que coincide por casualidad (`shift_end`), los campos
-requeridos. Lo comprobé corriendo tu `SimulationEngine` directamente:
-ahora mismo, un log tuyo pasado a
-`validate_format.py --event-log` fallaría en **cada línea** con "unknown
-event type". No lo reescribí yo — es tu diseño y sigue siendo tu tarea
-(P1.1) — pero es un bloqueador de puntos duro (Feasibility/Clarity dependen
-de esto) y conviene que lo sepas antes de darlo por terminado. El mapeo
-tentativo, para cuando lo ataques:
+**P1.1 (event log JSONL) — ya resuelto, verificado contra el validador real.**
+`EventType` y `SimulationEngine._log*` en `core/simulation/engine.py` ahora
+emiten exactamente los 8 tipos oficiales, planos (`{"event": ..., "sim_time":
+..., ...}`, no anidados bajo `payload`), con `sim_time` en ISO 8601 (ancla
+determinista `DEFAULT_SHIFT_START_TIME`, nunca `datetime.now()`) y
+`zone_pickup`/`zone_dropoff` resueltos a `Zone.zone_id` vía
+`zone_map.nearest_zone(coord)`. Verificado con
+`tests/test_abraham.py::TestEventLog::test_log_passes_official_validator`,
+que corre el `validate_format.py` real (no una copia) contra un log
+generado — y a mano:
 
-| Tu `EventType` | Evento oficial más cercano | Nota |
-|---|---|---|
-| (ninguno) | `shift_start` | falta emitirlo al inicio del turno |
-| `offer_received` | `order_offered` | nombre y campos distintos (`zone_pickup`/`zone_dropoff` enteros, no `pickup`/`dropoff` coordenadas) |
-| `offer_accepted` / `offer_rejected` | `decision` | el oficial es uno solo con `decision: ACCEPT\|SKIP`, mismos campos que `DecideResponse` (ver sección 0 de la versión anterior de este doc — siguen coincidiendo) |
-| `road_event` | `shock` | `shock_type` en vez de `type`, enum distinto |
-| `tick` | (ninguno) | no existe en el oficial; `position_update`/`earnings_update` sí, y tú no los emites |
-| `stop_completed`, `route_optimized` | (ninguno) | internos, no rompen el validador si no se llaman así — pero tampoco cubren `position_update`/`earnings_update`, que sí son requeridos |
-| `shift_end` | `shift_end` | coincide el nombre, no los campos (`orders_offered`, `orders_completed`, `earnings_mxn`, `safety_violations`) |
+```bash
+python3 student-materials/courier/validate_format.py --event-log <tu_log.jsonl>
+# events: order_offered=84, shift_end=1, shift_start=1, shock=24
+# PASS  output conforms to the required formats
+```
+
+**Lo que quedó deliberadamente fuera de este fix** (serían features nuevas,
+no una corrección de nombres):
+- `position_update`, `earnings_update`, `strategy_update` — nadie los emite
+  todavía. Le corresponden a `CourierStateManager`/`DecisionEngine` (P0.1/
+  Bloque 3), que sí saben posición/ganancias/estrategia; `SimulationEngine`
+  por sí solo no tiene esa información.
+- `distance_pickup_km` en `order_offered` queda en `0.0` (el generador no
+  conoce la posición real del courier, solo genera el stream). Cuando exista
+  un loop que una `SimulationEngine` con `CourierStateManager`, ese es el
+  punto para calcular el deadhead real.
+- `surge_multiplier` queda fijo en `1.0` — no se propaga un surge activo de
+  un `shock` anterior a las `order_offered` posteriores en la misma zona.
+- `log_stop_completed`/`log_route_optimized` se eliminaron (sin equivalente
+  oficial, nada en producción los llamaba). Si Bloque 4 necesita loguear una
+  ruta reoptimizada, no hay evento oficial para eso — no inventarlo, dejarlo
+  fuera del JSONL.
 
 ## 2. Omar — P0.3 (safety.py), P1.4 (explain_decision), P1.5 (capacidad), P2.1 (degradado)
 
