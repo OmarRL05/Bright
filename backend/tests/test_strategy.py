@@ -67,9 +67,21 @@ def test_arranca_usable_sin_modelo_sin_red_y_sin_key():
 
 def test_sin_advisor_configurado_no_es_lo_mismo_que_degradado():
     """Distinguir "no hay modelo" de "el modelo se cayo" importa: lo segundo es
-    lo que el protocolo puntua."""
+    lo que el protocolo puntua.
+
+    El refresco se fuerza a proposito: la version anterior de este test solo
+    leia el snapshot inicial y pasaba aunque el primer refresco marcara
+    `degraded`, que es exactamente lo que estaba pasando.
+    """
     layer = StrategyLayer(NullAdvisor())
     assert layer.snapshot().degraded is False
+
+    assert layer.maybe_refresh(T0, CONTEXT) is False, "no hay a quien preguntarle"
+    layer.refresh_now(T0, CONTEXT)
+
+    assert layer.snapshot().degraded is False
+    assert layer.status().degraded is False
+    assert layer.status().consecutive_failures == 0
 
 
 # ==========================================================================

@@ -162,6 +162,13 @@ class StrategyStatus:
 
 
 class ModelAdvisor(Protocol):
+    #: False cuando no hay ningun modelo detras. Un advisor no disponible no
+    #: se consulta, y por lo tanto **no puede degradar la capa**: "no hay
+    #: modelo configurado" y "el modelo se cayo" son estados distintos y el
+    #: protocolo solo puntua el segundo. Quien no declare el atributo se
+    #: asume disponible.
+    available: bool
+
     def propose(self, context: dict[str, Any]) -> ModelProposal:
         """Propone parametros. Lanza si el modelo no esta disponible."""
         ...
@@ -182,6 +189,7 @@ class NullAdvisor:
     """
 
     name = "null"
+    available = False
 
     def propose(self, context: dict[str, Any]) -> ModelProposal:
         raise ModelUnavailable("no hay advisor configurado")
@@ -208,6 +216,7 @@ class ClaudeAdvisor:
     """
 
     name = "claude"
+    available = True
 
     def __init__(
         self,
@@ -360,6 +369,12 @@ class StrategyLayer:
         vuelo (un solo vuelo a la vez: sin esto, un modelo lento acumularia
         llamadas y cada una publicaria parametros mas viejos que la anterior).
         """
+        if not getattr(self._advisor, "available", True):
+            # Sin modelo detras no hay nada que preguntar, y sobre todo no hay
+            # nada que pueda fallar: dispararlo igual marcaria `degraded` por
+            # una caida que no ocurrio (ver NullAdvisor).
+            return False
+
         if sim_time is not None and self._last_refresh_sim_time is not None:
             elapsed = (sim_time - self._last_refresh_sim_time).total_seconds() / 60.0
             if elapsed < self._refresh_interval:
@@ -387,7 +402,12 @@ class StrategyLayer:
         Para tests y para el ensayo en vivo del modo degradado: permite
         provocar la caida y ver el flag cambiar sin esperar a que pase el
         intervalo de simulacion.
+
+        Respeta la misma regla que `maybe_refresh`: un advisor no disponible no
+        se consulta, asi que no puede degradar la capa.
         """
+        if not getattr(self._advisor, "available", True):
+            return self._params
         with self._lock:
             self._in_flight = True
         self._run_refresh(sim_time, context)
