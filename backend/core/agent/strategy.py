@@ -91,7 +91,13 @@ from core.agent import reasons
 #: el cuello de botella del turno es el TIEMPO, no la oferta. Con ~200 ofertas
 #: en 8 horas y media hora por entrega, solo caben unas 25; ser selectivo gana
 #: mas dinero Y completa mas pedidos que aceptar todo lo razonable.
-DEFAULT_RESERVATION_WAGE_MXN_HR = 400.0
+#:
+#: Recalibrado de 400 a 260 al pasar el ZoneMap de 4 a 16 zonas (Persona 1):
+#: con mas zonas en la misma ciudad los trayectos son mas cortos, las ofertas
+#: valen menos por pedido y el umbral optimo baja. Es un recordatorio de que
+#: este numero pertenece al simulador y no al mundo: si cambia la geografia o
+#: la frecuencia de ofertas, hay que volver a barrerlo.
+DEFAULT_RESERVATION_WAGE_MXN_HR = 260.0
 
 MIN_RESERVATION_WAGE_MXN_HR = 60.0
 MAX_RESERVATION_WAGE_MXN_HR = 600.0

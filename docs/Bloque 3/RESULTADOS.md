@@ -11,33 +11,35 @@
 
 ## 1. La tabla
 
-12 turnos held-out de 8 h, vehículo `moto`, zona inicial 0.
+12 turnos held-out de 8 h, vehículo `moto`, zona inicial 0, sobre el `ZoneMap`
+de 16 zonas.
 Seeds de reporte: `101 113 127 131 149 151 163 173 181 191 199 211`.
-Seeds de tuning (**disjuntas**, nunca reportadas): `11 23 37 41 59 67 71 83 89 97 103 109`.
+Seeds de tuning (**disjuntas**, nunca reportadas): `11 23 37 41 59 67 71 83 89
+97 103 109`.
 
 | policy | mean_earnings_mxn | mean_mxn_per_hr | accept_rate_pct | orders_completed | deadhead_pct | deadline_misses | **safety_violations** |
 |---|---|---|---|---|---|---|---|
-| AcceptAll | 1104.8 | 138.1 | 100.0 | 11.2 | 49.9 | 2355 | **5270** |
-| HighestPay | 2039.2 | 254.9 | 12.7 | 10.4 | 49.8 | 291 | **509** |
-| NearestFirst | 1590.7 | 198.8 | 24.5 | 15.0 | 0.0 | 565 | **1084** |
-| GreedyRate | 4362.4 | 545.3 | 19.9 | 29.2 | 66.1 | 351 | **481** |
-| *GreedyRateSafe* | *3365.0* | *420.6* | *11.4* | *22.3* | *65.7* | *104* | ***0*** |
-| **OurAgent** | **3709.7** | **463.7** | **13.3** | **26.2** | **60.4** | **145** | **0** |
-| Oracle | 4105.1 | 513.1 | 14.4 | 28.3 | 60.2 | 155 | **0** |
+| AcceptAll | 895.8 | 112.0 | 100.0 | 9.8 | 50.1 | 2359 | **5179** |
+| HighestPay | 1858.5 | 232.3 | 14.5 | 9.5 | 49.7 | 340 | **638** |
+| NearestFirst | 1295.5 | 161.9 | 14.1 | 12.8 | 18.0 | 327 | **519** |
+| GreedyRate | 2780.0 | 347.5 | 13.6 | 17.0 | 56.8 | 284 | **395** |
+| *GreedyRateSafe* | *2454.3* | *306.8* | *8.0* | *15.7* | *55.0* | *149* | ***0*** |
+| **OurAgent** | **2452.1** | **306.5** | **8.3** | **16.2** | **55.9** | **172** | **0** |
+| Oracle | 2742.5 | 342.8 | 8.8 | 17.3 | 56.1 | 180 | **0** |
 
 `GreedyRateSafe` no es un baseline del template: es una fila de diagnóstico
 que hace legible el resto.
 
-## 2. Qué dice la tabla, en tres restas
+## 2. Qué dice la tabla, en dos restas
 
 **El resultado honesto es que perdemos contra el mejor baseline, y el motivo
 es exactamente la seguridad.** Vale más decirlo así que maquillarlo:
 
 ```
-GreedyRate        $4362   481 violaciones   ← el baseline más fuerte, sin seguridad
-GreedyRateSafe    $3365     0 violaciones   ← el gate de seguridad cuesta  −22.9%
-OurAgent          $3710     0 violaciones   ← el valor de zona recupera    +10.3%
-Oracle            $4105     0 violaciones   ← capturamos el 90.4%
+GreedyRate        $2780   395 violaciones   ← el baseline más fuerte, sin seguridad
+GreedyRateSafe    $2454     0 violaciones   ← el gate de seguridad cuesta  −11.7%
+OurAgent          $2452     0 violaciones   ← el valor de zona: ±0% (ver §4)
+Oracle            $2743     0 violaciones   ← capturamos el 89.4%
 ```
 
 Las tres frases que se sostienen con esto:
@@ -45,11 +47,11 @@ Las tres frases que se sostienen con esto:
 1. **Cero violaciones de seguridad en los 12 turnos held-out, y en los tres
    vehículos.** Hay un test parametrizado por seed que lo comprueba turno a
    turno, no sobre el promedio.
-2. **El precio de la seguridad es 22.9% de las ganancias**, y lo sabemos con
+2. **El precio de la seguridad es 11.7% de las ganancias**, y lo sabemos con
    un número porque medimos la misma política con y sin el gate.
-3. **De lo que se puede recuperar sin violar nada, capturamos el 90.4%.** El
-   10% restante es lo que cuesta elegir el umbral a ciegas en vez de con
-   conocimiento del turno completo.
+3. **De lo que se puede ganar sin violar nada, capturamos el 89.4%.** El resto
+   es lo que cuesta elegir el umbral a ciegas en vez de con conocimiento del
+   turno completo.
 
 `AcceptAll` es instructivo: acepta el 100% y termina **último**. Aceptar todo
 llena el turno de pedidos que no dejan dinero después del combustible y que
@@ -62,33 +64,47 @@ nuestro, "les ganamos" significaría nada más que lo afinamos:
 
 | política | parámetro | barrido | elegido |
 |---|---|---|---|
-| HighestPay | `min_pay_mxn` | 60 → 300 | 170 |
-| NearestFirst | `max_deadhead_km` | 1 → 12 | 1.0 |
-| GreedyRate | `min_rate_mxn_hr` | 150 → 500 | 400 |
-| OurAgent | `reservation_wage_mxn_hr` | 200 → 500 | 400 |
+| HighestPay | `min_pay_mxn` | 110 → 280 | 170 |
+| NearestFirst | `max_deadhead_km` | 0.5 → 8 | 5.0 |
+| GreedyRate | `min_rate_mxn_hr` | 140 → 400 | 300 |
+| OurAgent | `reservation_wage_mxn_hr` | 100 → 400 | 260 |
 | OurAgent | `DROPOFF_DEMAND_WEIGHT` | 0.0 → 0.6 | 0.6 |
 
-**No se tomó el máximo de la rejilla.** Con 12 turnos la diferencia entre el
-pico (`wage=400, peso=0.4`, $3931) y su vecino (`peso=0.6`, $3875) está dentro
-del ruido. Se eligió el punto cuyo **peor vecino** en la rejilla es más alto —
-el que sobrevive a que el turno salga distinto. Ese criterio es el que hace
-que el número del tuning se parezca al del reporte.
+Se eligió el punto cuyo **peor vecino** en la rejilla es más alto, no el
+máximo — el que sobrevive a que el turno salga distinto. Aquí ambos criterios
+coincidieron en `wage=260, peso=0.6`.
 
-**`GreedyRate` y `OurAgent` acabaron en el mismo umbral ($400/hr).** No fue
-impuesto: los dos barridos dieron el mismo óptimo por separado. Es lo que
-permite que la resta entre las dos filas aísle la seguridad y no una
-calibración distinta.
+**El agente y `GreedyRate` acabaron en umbrales distintos** ($260 vs $300), y
+tiene sentido: sin gate de seguridad, `GreedyRate` nunca pierde tiempo en
+pausas obligatorias ni esperando a que baje el calor, así que puede permitirse
+ser más exigente. Los dos números salen del mismo barrido sobre las mismas
+seeds, cada uno en su óptimo.
 
-**$400/hr parece altísimo para un repartidor real, y lo es a propósito:** el
-cuello de botella del turno es el **tiempo**, no la oferta. Llegan ~200 ofertas
-en 8 h y solo caben ~28 entregas. Ser selectivo gana más dinero **y completa
-más pedidos** que aceptar todo lo razonable — se ve en la tabla: OurAgent
-acepta 13.3% y entrega 26.2; AcceptAll acepta 100% y entrega 11.2.
+**Estos números pertenecen al simulador, no al mundo.** Se recalibraron de
+$400 a $260 cuando el `ZoneMap` pasó de 4 a 16 zonas: con más zonas en la misma
+ciudad los trayectos son más cortos, cada pedido vale menos y el umbral óptimo
+baja. Si cambia la geografía o la frecuencia de ofertas, hay que volver a
+barrer.
 
 ## 4. Lo que no funcionó
 
 Se prueban aquí porque *"¿qué cortaste y por qué?"* es una de las preguntas
 que los jueces hacen por escrito.
+
+**El ajuste por zona de dropoff no generalizó.** Sobre las seeds de tuning
+aportaba +5% ($2471 contra $2351 con peso 0). Sobre las 12 seeds held-out la
+diferencia es **cero**: `GreedyRateSafe` (misma política, peso 0) deja $2454.3
+y `OurAgent` (peso 0.6) deja $2452.1 — dentro del ruido, y de hecho un pelo por
+debajo.
+
+Se reporta el número tal cual y **no se re-tuneó el peso contra las seeds de
+reporte**, porque hacer eso es exactamente lo que el material castiga con techo
+de 3 en Results. El peso se queda en el 0.6 que eligió el tuning. Con el mapa
+de 4 zonas sí aportaba +10.3%; con 16 zonas la señal de demanda por zona se
+diluye, porque hay más zonas y más parecidas entre sí.
+
+Es el resultado que justifica todo el aparato de seeds disjuntas: sin él,
+habríamos reportado "+5% gracias al valor de la zona" y habría sido falso.
 
 **Salario de reserva decreciente al final del turno.** La idea económica es
 correcta: si faltan 30 minutos, el costo de oportunidad de quedarse parado es
