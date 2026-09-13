@@ -5,14 +5,16 @@ Monterrey, ver core/routing/graph.py) deben poder intercambiarse sin que
 decision.py ni greedy.py sepan cual de los dos estan usando. Ver
 docs/Bloque 3/01_Plan.md seccion 3 para el porque de este desacople.
 
-RoadNetwork (Bloque 5) todavia no implementa este Protocol -- graph.py sigue
-en NotImplementedError. Mientras tanto, core.routing.euclidean.EuclideanDistanceProvider
-lo satisface como placeholder.
+core.routing.euclidean.EuclideanDistanceProvider (placeholder) y
+core.routing.graph.RoadNetwork (Bloque 5, grafo real) implementan ambos este
+Protocol con los mismos nombres de metodo -- se pueden intercambiar en
+DecisionEngine sin adaptador.
 """
 
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 
+@runtime_checkable
 class DistanceProvider(Protocol):
     def travel_time(self, origin: tuple[float, float], destination: tuple[float, float]) -> float:
         """Tiempo de viaje estimado entre dos coordenadas, en minutos."""

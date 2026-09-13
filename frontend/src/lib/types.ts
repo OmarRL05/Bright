@@ -9,6 +9,7 @@ export interface Offer {
   pay: number;
   time_window: [number, number];
   received_at: number;
+  demand_percentile: number;
 }
 
 export type RoadEventType = "closure" | "traffic" | "surge";
