@@ -11,11 +11,15 @@ Este endpoint es autocontenido (no depende de que el loop de simulacion este
 corriendo): cada request trae su propio `sim_time` y, opcionalmente,
 `courier_state_overrides` para fijar el estado del repartidor antes del
 ping -- asi es como el protocolo de evaluacion prueba condiciones de
-frontera sin tener que orquestar un turno completo. Por eso puede
-implementarse ya, aunque el reloj real del turno (P0.1, Abraham) y el motor
-VRPTW de coordenadas (Bloque 3, decision.py/greedy.py) todavia no hablan el
-mismo modelo de datos (zonas enteras vs. lat/lon) -- ver P0.2 en el roadmap
-de la auditoria del 12 sep.
+frontera sin tener que orquestar un turno completo.
+
+VEHICLE_PROFILES viene de core.models (P0.5, Abraham) y ya trae limites de
+peso/volumen. El motor VRPTW de coordenadas (Bloque 3, decision.py/greedy.py)
+sigue sin hablar el mismo modelo de zonas enteras que este endpoint -- este
+usa `distance_pickup_km`/`distance_delivery_km` tal como llegan en el
+request en vez de resolver `zone_pickup`/`zone_dropoff` a coordenadas, para
+no depender de que un juez use las mismas zonas que nuestro simulador
+interno genera (ver docs/03_Integracion_API_Decide.md).
 """
 
 import time
@@ -31,7 +35,7 @@ from api.schemas import (
 )
 from core.agent.economics import RESERVATION_WAGE_MXN_HR, evaluate_economics
 from core.agent.safety import evaluate_safety
-from core.agent.vehicle_profiles import VEHICLE_PROFILES
+from core.models import VEHICLE_PROFILES, VehicleType
 
 MAX_REASON_WORDS = 40
 
@@ -51,15 +55,15 @@ def _order_total_time_min(request: DecideRequest) -> float:
     deriva de distancia + velocidad del perfil de vehiculo, tal como pide el
     schema ("if absent, derive from distance and speed").
     """
-    profile = VEHICLE_PROFILES[request.vehicle]
+    profile = VEHICLE_PROFILES[VehicleType(request.vehicle)]
 
     to_pickup_min = request.estimated_pickup_min
     if to_pickup_min is None:
-        to_pickup_min = request.distance_pickup_km / profile.speed_kmh * 60.0
+        to_pickup_min = request.distance_pickup_km / profile.avg_speed_kmh * 60.0
 
     to_dropoff_min = request.estimated_delivery_min
     if to_dropoff_min is None:
-        to_dropoff_min = request.distance_delivery_km / profile.speed_kmh * 60.0
+        to_dropoff_min = request.distance_delivery_km / profile.avg_speed_kmh * 60.0
 
     # El repartidor puede llegar al pickup antes de que la orden este lista;
     # el reloj efectivo de esa etapa es el mayor de los dos.

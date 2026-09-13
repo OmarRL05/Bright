@@ -7,21 +7,29 @@ ver el limite exacto.
 TODO(Omar, P0.3/P1.5 en el roadmap de la auditoria del 12 sep): dueno de este
 modulo por el reparto de tareas del equipo. Esta es una primera version
 funcional (constantes + 5 checks puros) para no bloquear POST /decide (P0.4,
-Adriana) mientras se coordina el reparto real. FLAGGED_ZONES en particular es
-un placeholder hasta que Bloque 1 (P0.2) defina el mapa de zonas real -- solo
-importa que sea demostrable en vivo, no que coincida con datos reales todavia.
+Adriana) mientras se coordina el reparto real.
+
+VEHICLE_PROFILES viene de core.models (P0.5, Abraham) -- unica fuente de
+verdad de perfiles de vehiculo, compartida con el motor VRPTW interno. Este
+modulo ya no define su propio placeholder (ver merge de
+abraham/bloques-1-2 -- antes eran dos VehicleProfile distintos y sin
+weight/volume, se consolido en uno solo con los 5 campos).
 """
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from core.agent.vehicle_profiles import VEHICLE_PROFILES, Vehicle
+from core.models import DEFAULT_ZONE_MAP, VEHICLE_PROFILES, VehicleType
+
+Vehicle = str  # "moto" | "car" | "bike", tal como llega del request HTTP
 
 # --- Constraint 1: zona marcada de noche ---------------------------------
 NIGHT_CURFEW_HOUR = 22  # dropoff en zona marcada a esta hora o despues -> refuse
 
-# Placeholder: reemplazar cuando Bloque 1 defina el mapa real de zonas.
-FLAGGED_ZONES: frozenset[int] = frozenset({11, 13, 14})
+# Zona marcada: Centro (zone_id=2 en DEFAULT_ZONE_MAP, ver core.models) -- la
+# de mayor demand_score/densidad urbana, elegida como placeholder de riesgo
+# nocturno. Ajustar cuando el equipo defina un criterio real de zonas de riesgo.
+FLAGGED_ZONES: frozenset[int] = frozenset({DEFAULT_ZONE_MAP.zone_by_name("Centro").zone_id})
 
 # --- Constraint 2: break obligatorio --------------------------------------
 MANDATORY_BREAK_AFTER_MIN = 240.0  # 4 horas continuas
@@ -42,7 +50,7 @@ class SafetyViolation:
 def check_vehicle_capacity(
     vehicle: Vehicle, weight_kg: float | None, volume_liters: float | None
 ) -> SafetyViolation | None:
-    profile = VEHICLE_PROFILES[vehicle]
+    profile = VEHICLE_PROFILES[VehicleType(vehicle)]
     if weight_kg is not None and weight_kg > profile.weight_limit_kg:
         return SafetyViolation(
             "vehicle_capacity",

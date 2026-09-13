@@ -55,15 +55,23 @@ class VehicleType(str, Enum):
 class VehicleProfile:
     """Parámetros de un tipo de vehículo que afectan decisiones y tiempos.
 
-    avg_speed_kmh: velocidad promedio en zona urbana (Monterrey).
-    max_backpack:  número máximo de pedidos simultáneos en mochila.
-    cost_per_km:   costo operativo por km (combustible/desgaste), en MXN.
-                   Usado por el motor de decisión para calcular ganancia neta.
+    avg_speed_kmh:       velocidad promedio en zona urbana (Monterrey).
+    max_backpack:        número máximo de pedidos simultáneos en mochila
+                          (motor VRPTW de coordenadas, Bloque 3).
+    cost_per_km:         costo operativo por km (combustible/desgaste), en
+                          MXN. Usado por el motor de decisión para calcular
+                          ganancia neta.
+    weight_limit_kg:     límite de peso por pedido (contrato oficial,
+                          constraint vehicle_capacity — ver
+                          student-materials/courier/evaluation_protocol.md).
+    volume_limit_liters: límite de volumen por pedido (idem).
     """
     type: VehicleType
     avg_speed_kmh: float
     max_backpack: int
     cost_per_km: float
+    weight_limit_kg: float
+    volume_limit_liters: float
 
     @property
     def min_per_km(self) -> float:
@@ -78,18 +86,24 @@ VEHICLE_PROFILES: dict[VehicleType, VehicleProfile] = {
         avg_speed_kmh=25.0,
         max_backpack=3,
         cost_per_km=1.5,
+        weight_limit_kg=15.0,
+        volume_limit_liters=40.0,
     ),
     VehicleType.CAR: VehicleProfile(
         type=VehicleType.CAR,
         avg_speed_kmh=20.0,
         max_backpack=6,
         cost_per_km=3.0,
+        weight_limit_kg=50.0,
+        volume_limit_liters=150.0,
     ),
     VehicleType.BIKE: VehicleProfile(
         type=VehicleType.BIKE,
         avg_speed_kmh=15.0,
         max_backpack=2,
         cost_per_km=0.2,
+        weight_limit_kg=8.0,
+        volume_limit_liters=20.0,
     ),
 }
 
@@ -100,6 +114,7 @@ VEHICLE_PROFILES: dict[VehicleType, VehicleProfile] = {
 
 @dataclass(frozen=True)
 class Zone:
+    zone_id: int
     name: str
     coord: tuple[float, float]   # (lat, lon)
     demand_score: float          # [0, 1]; 1 = zona más caliente
@@ -110,13 +125,19 @@ class ZoneMap:
 
     Fuente de verdad única: antes de este modelo, las coordenadas estaban
     duplicadas en engine.py y demand.py. Ahora ambos importan de aquí.
+
+    `zone_id` es el mismo entero que el contrato oficial usa en
+    `zone_pickup`/`zone_dropoff` (ver
+    student-materials/courier/decision_response_schema.json) — es el puente
+    entre lo que un juez manda por HTTP a POST /decide y las coordenadas que
+    usa el motor VRPTW interno (Bloque 3/4/5).
     """
 
     _DEFAULT_ZONES: list[Zone] = [
-        Zone("Tec",       (25.651, -100.289), demand_score=0.7),
-        Zone("San Pedro", (25.657, -100.402), demand_score=0.5),
-        Zone("Centro",    (25.680, -100.310), demand_score=0.9),
-        Zone("Apodaca",   (25.780, -100.180), demand_score=0.3),
+        Zone(0, "Tec",       (25.651, -100.289), demand_score=0.7),
+        Zone(1, "San Pedro", (25.657, -100.402), demand_score=0.5),
+        Zone(2, "Centro",    (25.680, -100.310), demand_score=0.9),
+        Zone(3, "Apodaca",   (25.780, -100.180), demand_score=0.3),
     ]
 
     def __init__(self, zones: list[Zone] | None = None) -> None:
@@ -139,6 +160,12 @@ class ZoneMap:
             if z.name == name:
                 return z
         raise KeyError(f"Zona '{name}' no encontrada en ZoneMap")
+
+    def by_id(self, zone_id: int) -> Zone:
+        for z in self._zones:
+            if z.zone_id == zone_id:
+                return z
+        raise KeyError(f"zone_id {zone_id} no encontrado en ZoneMap")
 
 
 def _sq_dist(a: tuple[float, float], b: tuple[float, float]) -> float:

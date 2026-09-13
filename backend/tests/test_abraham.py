@@ -97,7 +97,7 @@ class TestZoneMap:
         assert len(DEFAULT_ZONE_MAP.coords) == len(DEFAULT_ZONE_MAP.zones)
 
     def test_custom_zones(self):
-        custom = ZoneMap([Zone("A", (1.0, 2.0), 0.8), Zone("B", (3.0, 4.0), 0.2)])
+        custom = ZoneMap([Zone(0, "A", (1.0, 2.0), 0.8), Zone(1, "B", (3.0, 4.0), 0.2)])
         assert custom.nearest_zone((1.1, 2.1)).name == "A"
         assert custom.nearest_zone((2.9, 3.9)).name == "B"
 
