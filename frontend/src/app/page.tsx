@@ -1,10 +1,10 @@
 "use client";
 
-import { Feed } from "@/components/Feed";
+
 import { Map } from "@/components/Map";
 import { Metrics } from "@/components/Metrics";
 import { useSimulation } from "@/hooks/useSimulation";
-import DecisionFeed from "@/components/DashboardFeed";
+import DashboardFeed from "@/components/DashboardFeed";
 
 export default function Home() {
   const { snapshot, connected } = useSimulation();
@@ -29,7 +29,7 @@ export default function Home() {
         </div>
         <div className="rounded-lg border border-gray-200 p-4 dark:border-gray-800">
           <h2 className="mb-2 text-sm font-medium text-gray-500">Decisiones</h2>
-          <<DashboardFeed events={snapshot?.logs ?? []} /> events={snapshot?.logs ?? []} />
+          <DashboardFeed events={snapshot?.logs ?? []} />
         </div>
       </section>
     </div>

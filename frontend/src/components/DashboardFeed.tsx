@@ -1,10 +1,19 @@
 import React from 'react';
 
-// 1. Le agregamos "any[]" para que TypeScript no marque error
-// 2. Lo renombramos a DashboardFeed para que coincida con tu importación
-export default function DashboardFeed({ events = [] }) {
-  
-  // 3. BLINDAJE: Si por alguna razón events no es un arreglo, mostramos un mensaje en lugar de crashear
+interface EventItem {
+  event: string;
+  decision?: string;
+  order_id?: string;
+  sim_time?: string;
+  binding_constraint?: string;
+  reason?: string;
+}
+
+interface DashboardFeedProps {
+  events?: EventItem[];
+}
+
+export default function DashboardFeed({ events = [] }: DashboardFeedProps) {
   if (!Array.isArray(events)) {
     return (
       <div className="bg-gray-900 text-gray-500 p-4 rounded-md h-96 border border-gray-700 text-sm font-mono flex items-center justify-center">
