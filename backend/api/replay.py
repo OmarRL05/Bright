@@ -34,7 +34,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from core.agent.journal import JOURNAL, to_decision_event
+from core.agent.journal import JOURNAL, to_dashboard_decision_event
 from core.agent.shocks import SHOCKS
 from core.agent.strategy import STRATEGY
 
@@ -71,7 +71,7 @@ async def decisions(limit: int = 20) -> dict:
     registros = JOURNAL.recent(limit)
     return {
         "count": len(registros),
-        "decisions": [to_decision_event(r) for r in registros],
+        "decisions": [to_dashboard_decision_event(r) for r in registros],
     }
 
 

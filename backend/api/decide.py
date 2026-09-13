@@ -74,6 +74,7 @@ from core.agent.journal import (
 from core.agent.safety import SafetyVerdict, combine, evaluate_safety_full, profile_for
 from core.agent.shocks import SHOCKS, ShockEffects, shock_from_payload
 from core.agent.strategy import STRATEGY
+from api.route import GRAPHML_PATH
 from core.routing.euclidean import ROAD_DETOUR_FACTOR
 
 router = APIRouter(tags=["decide"])
@@ -500,14 +501,21 @@ async def status() -> StatusResponse:
         last_model_error=health.last_error,
         advisor=health.advisor,
         decisions_recorded=len(JOURNAL),
+        # El sistema corre a dos velocidades y conviene que lo diga el, no un
+        # comentario en el frontend: las DECISIONES miden con haversine por un
+        # factor de rodeo (barato, siempre disponible, sin dependencias), y el
+        # MAPA dibuja la calle real cuando el grafo esta descargado. Un mapa
+        # bonito que falta no cuesta nada; una decision con la distancia
+        # equivocada, si.
         distance_model=(
-            f"haversine entre centroides de zona x {ROAD_DETOUR_FACTOR} "
-            "(factor de rodeo); sin grafo vial"
+            f"decisiones: haversine entre centroides de zona x {ROAD_DETOUR_FACTOR} "
+            "(factor de rodeo). Mapa: geometria real de calles si hay grafo vial"
         ),
         road_detour_factor=ROAD_DETOUR_FACTOR,
-        # Cuando esto sea True habra una polilinea que dibujar. Hoy el sistema
-        # sabe CUANTO se recorre, no POR DONDE.
-        route_geometry_available=False,
+        # Derivado, no fijado a mano: es cierto en la maquina donde corre. Se
+        # mira el archivo y no se carga el grafo -- cargarlo aqui haria que el
+        # primer /status tardara segundos por una bandera booleana.
+        route_geometry_available=GRAPHML_PATH.exists(),
     )
 
 

@@ -36,15 +36,18 @@ aquí es un TODO de verdad.
 | — Replay | `core/evaluation/replay.py`, `scripts/replay.py` | ✅ Graba, reproduce y difea: 201 decisiones sin diferencias, en proceso y por HTTP |
 | — Ensayo de demo | `scripts/demo.py` | ✅ 6 escenas autoverificadas contra el endpoint vivo |
 | 4 — Optimizador global | `core/routing/ortools_optimizer.py` | ⚠️ VRPTW funcional en aislamiento, **sin consumidor**: no está en el camino de decisión. Requiere `ortools`, no instalado |
-| 5 — Grafo vial | `core/routing/graph.py` | ⚠️ OSMnx + NetworkX, **sin consumidor**: las distancias salen de haversine × factor de rodeo. Requiere `osmnx` y `monterrey.graphml`, ninguno presente |
-| 6 — API | `api/decide.py`, `api/replay.py` | ✅ 12 rutas, todas con implementación real. Los stubs que devolvían 500 (`routes.py`, `sockets.py`) se eliminaron |
-| 6 — Frontend | `frontend/src/` | ⚠️ Feed conectado a datos reales con `binding_constraint`; el mapa dibuja línea recta entre zonas — ver `docs/Bloque 3/NOTA_MAPA.md` |
+| 5 — Grafo vial | `core/routing/graph.py`, `GET /route` | ✅ OSMnx + NetworkX. Alimenta la **geometría del mapa**, no las decisiones: esas miden con haversine × 1.35. Requiere `monterrey.graphml`; sin él, `/route` responde 503 y el mapa cae a línea recta |
+| 6 — API | `api/decide.py`, `api/replay.py`, `api/route.py`, `api/zones.py` | ✅ 15 rutas, todas con implementación real. Los stubs que devolvían 500 (`routes.py`, `sockets.py`) se eliminaron |
+| 6 — Frontend | `frontend/src/` | ✅ Feed, KPIs y mapa reales por REST — cero datos inventados. Leaflet + `GET /zones`, ruta por calles de `GET /route`, shocks en vivo de `GET /shocks` |
 
-> **Dos módulos sin consumidor, a propósito.** Bloque 4 y 5 (OR-Tools y el
-> grafo vial) están implementados y no los usa nadie: el camino que los jueces
-> prueban mide distancias con haversine × 1.35 entre centroides de zona. Se
-> conservan porque son trabajo real y no crean ambigüedad sobre dónde se
-> decide; el motor de decisión por coordenadas que sí la creaba se eliminó.
+> **Dos velocidades a propósito.** El grafo vial dibuja el mapa pero **no
+> decide**: las distancias que alimentan el combustible, los tiempos y el
+> umbral salen de haversine × 1.35 (factor de rodeo medido, ver
+> `core/routing/euclidean.py`). Enchufar el grafo a las decisiones exigiría
+> `osmnx` instalado en la máquina de la demo; el mapa se degrada solo si falta,
+> una decisión equivocada no. El optimizador OR-Tools (Bloque 4) sigue sin
+> consumidor: se conserva porque es trabajo real y no crea ambigüedad sobre
+> dónde se decide.
 
 ## Quickstart
 
@@ -96,7 +99,22 @@ cp .env.local.example .env.local
 npm run dev
 ```
 
-Abre `http://localhost:3000`.
+Abre `http://localhost:3000`. Con el backend arrancado pero sin turno
+corriendo, vas a ver las 16 zonas en el mapa y el feed vacío — es el estado
+real, no un error. Dos formas de poblarlo:
+
+- **En vivo**: manda pings a `/decide` (`python3 backend/scripts/demo.py`, o
+  a mano con `curl`) y el feed/mapa se refrescan solos cada 1.5 s.
+- **Grabado**: `python3 backend/scripts/run_evaluation.py --event-log
+  backend/logs/replay_seed_101.jsonl --seed 101` y elígelo en "Turnos
+  grabados" — dibuja la ruta completa del turno de una vez.
+
+> **Nada que instalar aparte:** el mapa usa `leaflet`/`react-leaflet` (ya en
+> `package.json`, sin llave de API — tiles de CartoDB, gratis). El único paso
+> manual real es el `.env.local` de arriba; si ya tenías uno de antes de este
+> cambio, bórralo y vuelve a copiarlo — la plantilla anterior traía
+> `NEXT_PUBLIC_API_URL` con un `/api` que no corresponde a ningún endpoint
+> real (ver tabla de abajo) y deja el dashboard entero pegado en "sin backend".
 
 ## Endpoints
 
@@ -108,10 +126,15 @@ Abre `http://localhost:3000`.
 | `GET` | `/shocks` | Qué shocks están vigentes (`?at=<sim_time ISO>`) |
 | `DELETE` | `/shocks` | Limpia los vigentes entre pasadas del ensayo |
 | `GET` | `/status` | Salud del servicio, incluido `degraded` |
+| `GET` | `/decisions?limit=N` | Feed del dashboard, con `zone_pickup`/`zone_dropoff` para el mapa |
+| `GET` | `/zones` | Las 16 zonas (`zone_id`, `coord`, `demand_score`, `flagged`) — de aquí sale el mapa |
+| `GET` | `/replays` / `/replay/{seed}` / `/replay/{seed}/summary` | Turnos grabados, en JSONL crudo |
 | `GET` | `/health` | Liveness |
 
-`/decide` y `/shock` **no** van bajo el prefijo `/api`: el material del reto
-golpea `http://host:puerto/decide` directo.
+Ninguno de estos va bajo el prefijo `/api`: el material del reto golpea
+`http://host:puerto/decide` directo, y el resto sigue la misma convención
+por consistencia. `/api/simulation/*` (en `api/routes.py`) es la excepción —
+y sigue sin implementarse.
 
 ## Verificación — las tres banderas del validador
 

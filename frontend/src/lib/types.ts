@@ -22,7 +22,15 @@ export type BindingConstraint =
   | "vehicle_capacity"
   | "reservation_wage";
 
-/** Evento `decision` del event log. Es lo que sirve GET /decisions. */
+/**
+ * Evento `decision` del event log. Es lo que sirve GET /decisions.
+ *
+ * `zone_pickup`/`zone_dropoff` NO son parte del evento `decision` oficial
+ * (event_log_schema.json los deja en `order_offered`, aparte) -- GET
+ * /decisions los agrega solo para el dashboard, ver
+ * core.agent.journal.to_dashboard_decision_event en el backend. Optional
+ * porque un replay muy viejo o una fuente distinta podria no traerlos.
+ */
 export interface DecisionEvent {
   event: "decision";
   order_id: string;
@@ -31,6 +39,8 @@ export interface DecisionEvent {
   reason: string;
   binding_constraint: BindingConstraint | null;
   latency_ms: number;
+  zone_pickup?: number | null;
+  zone_dropoff?: number | null;
   tier: "tier1" | "tier2";
   degraded: boolean;
 }
@@ -55,6 +65,47 @@ export interface ReplaySummary {
   bytes: number;
   url: string;
 }
+
+/**
+ * Una zona de GET /zones. `coord` es [lat, lon] -- viene tal cual de
+ * `core.models.DEFAULT_ZONE_MAP`, la unica fuente de verdad compartida con
+ * el motor de decision y el simulador. `flagged` es la constraint real de
+ * `flagged_zone_night` (core.agent.safety.FLAGGED_ZONES), no un color
+ * elegido a mano aqui.
+ */
+export interface Zone {
+  zone_id: number;
+  name: string;
+  coord: [number, number];
+  demand_score: number;
+  flagged: boolean;
+}
+
+export type ShockType = "surge" | "closure" | "rain" | "delay";
+
+/**
+ * Una entrada de `active`/`history` en GET /shocks -- espejo de
+ * `core.agent.shocks.Shock.to_event()`. Los campos opcionales solo vienen
+ * si aplican al tipo (un shock de lluvia no trae `zone`).
+ */
+export interface ShockInfo {
+  event: "shock";
+  shock_type: ShockType;
+  sim_time: string | null;
+  duration_min: number;
+  zone?: number;
+  multiplier?: number;
+  road?: string;
+  order_id?: string;
+  slip_min?: number;
+}
+
+export const SHOCK_COLORS: Record<ShockType, string> = {
+  surge: "#f59e0b", // amber-500 -- sube el pago
+  closure: "#f43f5e", // rose-500 -- bloquea tramo
+  delay: "#a1a1aa", // zinc-400 -- retraso puntual
+  rain: "#38bdf8", // sky-400 -- ralentiza, no bloquea
+};
 
 /**
  * Las constraints de seguridad, para pintarlas distinto del rechazo por paga.

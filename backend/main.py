@@ -12,6 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.decide import router as decide_router
 from api.replay import router as replay_router
+from api.route import router as route_router
+from api.zones import router as zones_router
 from core.agent.strategy import STRATEGY, ClaudeAdvisor
 
 
@@ -55,6 +57,8 @@ app.add_middleware(
 
 app.include_router(decide_router)
 app.include_router(replay_router)
+app.include_router(route_router)
+app.include_router(zones_router)
 
 
 @app.get("/health")
