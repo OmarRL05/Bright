@@ -28,6 +28,11 @@ export interface RouteStop {
 
 export interface CourierState {
   version: number;
+  // Posición en vivo del repartidor (lat, lon). La calcula el motor de
+  // simulación (Bloque 1/3) cada tick, interpolando a lo largo del tramo
+  // que está recorriendo — el Bloque 4 (GlobalOptimizer) NUNCA la escribe,
+  // solo la lee vía snapshot() para fijar el depot del VRPTW/PDPTW.
+  position: [number, number];
   time_remaining: number;
   earnings: number;
   backpack: Offer[];
