@@ -30,3 +30,5 @@ backend/data/*.csv
 .vscode/
 .idea/
 *.swp
+backend/.venv/
+backend/out/

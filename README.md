@@ -48,10 +48,21 @@ docs/                # Arquitectura y documentación técnica del reto
 
 ### Backend
 
+**Usa Python 3.12 exacto**, no la última que tengas instalada. `backend/.python-version`
+lo fija; créala explícitamente con esa versión, no con `python3` a secas:
+
 ```bash
 cd backend
-python3 -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+
+# macOS (Homebrew)
+brew install python@3.12
+/opt/homebrew/bin/python3.12 -m venv .venv
+source .venv/bin/activate
+
+# Windows (py launcher, ya trae varias versiones si usas el instalador oficial)
+py -3.12 -m venv .venv
+.venv\Scripts\activate
+
 pip install -r requirements.txt
 cp .env.example .env
 uvicorn main:app --reload --port 8000
@@ -65,6 +76,14 @@ Correr tests:
 pytest
 ```
 
+> **Por qué la versión exacta importa:** `requirements.txt` fija versiones
+> (`pydantic==2.10.4`, `ortools==9.11.4210`, ...) que solo publican wheel
+> precompilado hasta **cp312**. Con Python 3.13/3.14 `pip` intenta compilar
+> `pydantic-core` desde fuente (necesita Rust) y `ortools` directamente no
+> tiene wheel para compilar (necesita Bazel + toolchain de C++) — falla en
+> Windows y Mac por igual, no es un problema de plataforma sino de versión
+> de Python. Con 3.12 exacto, todo instala de wheels, sin compilar nada.
+>
 > **Nota sobre `osmnx`**: instala varias dependencias geoespaciales
 > (geopandas, shapely, pyogrio). Si falla la instalación en tu máquina,
 > revisa que tengas una versión reciente de `pip` (`pip install -U pip`)
