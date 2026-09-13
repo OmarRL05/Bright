@@ -40,7 +40,7 @@ interno genera (ver docs/03_Integracion_API_Decide.md).
 
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from api.schemas import (
     DecideRequest,
@@ -88,7 +88,7 @@ def _order_total_time_min(request: DecideRequest) -> float:
 
 
 @router.post("/decide", response_model=DecideResponse)
-async def decide(request: DecideRequest) -> DecideResponse:
+async def decide(request: DecideRequest, background: BackgroundTasks) -> DecideResponse:
     """Nunca debe devolver 500: un crash en la ventana de decision es un
     hard failure de Feasibility (evaluation_protocol.md seccion 7). El
     parseo del body ya paso por pydantic antes de llegar aqui (422 si el
@@ -194,7 +194,7 @@ async def decide(request: DecideRequest) -> DecideResponse:
             DecisionRecord(**{**record.__dict__, "latency_ms": latency_ms})
         )
 
-    return DecideResponse(
+    response = DecideResponse(
         order_id=request.order_id,
         decision=decision,
         reason=reason,
@@ -203,6 +203,37 @@ async def decide(request: DecideRequest) -> DecideResponse:
         tier="tier1",  # las constraints de seguridad salen siempre del fast path
         degraded=strategy.degraded,
         economics=economics_breakdown,
+    )
+
+    # ENTRE pings, nunca dentro: la tarea de fondo corre despues de que este
+    # response ya salio, y `maybe_refresh` ademas solo despacha (no espera al
+    # modelo) y respeta su intervalo en tiempo de simulacion. El protocolo es
+    # explicito: la capa de estrategia "runs between pings, never inside a
+    # decision window".
+    background.add_task(_refresh_strategy, request)
+
+    return response
+
+
+def _refresh_strategy(request: DecideRequest) -> None:
+    """Le da a tier2 la oportunidad de revisar sus parametros.
+
+    Nada de lo que pase aqui puede afectar a la decision que ya se devolvio.
+    Si el modelo esta caido, `maybe_refresh` marca degradado y el siguiente
+    /decide lo reporta; ningun pedido espera por esto.
+    """
+    STRATEGY.maybe_refresh(
+        request.sim_time,
+        {
+            "sim_time": request.sim_time.isoformat(),
+            "vehicle": request.vehicle,
+            "zona_actual": request.zone_pickup,
+            "decisiones_registradas": len(JOURNAL),
+            "ultimas_decisiones": [
+                {"decision": r.decision, "binding_constraint": r.binding_constraint}
+                for r in JOURNAL.recent(10)
+            ],
+        },
     )
 
 
