@@ -13,6 +13,22 @@ corriendo): cada request trae su propio `sim_time` y, opcionalmente,
 ping -- asi es como el protocolo de evaluacion prueba condiciones de
 frontera sin tener que orquestar un turno completo.
 
+Que pasa dentro de la ventana de 50 ms, en orden
+-------------------------------------------------
+1. pydantic parsea el body (`extra="ignore"`: los jueces pueden mandar campos
+   que no conocemos y eso no puede ser un 422).
+2. Se estima cuanto tarda la oferta y cuanto falta para terminar lo que ya
+   trae en vuelo.
+3. `evaluate_safety_full` -- las 5 constraints duras. No ve el pago.
+4. `evaluate_economics` -- tasa efectiva contra el salario de reserva vigente.
+5. `combine` -- une las dos. Si la seguridad bloqueo, lo economico se ignora
+   por completo; no hay camino de codigo que produzca ACCEPT con una
+   constraint violada.
+6. `JOURNAL.record` -- O(1), sin formateo, para poder explicar despues.
+
+Nada de esto toca la red, el disco ni un modelo. La capa de estrategia (tier2)
+corre en otro hilo, entre pings, y aqui solo se **lee** lo que haya publicado.
+
 VEHICLE_PROFILES viene de core.models (P0.5, Abraham) y ya trae limites de
 peso/volumen. El motor VRPTW de coordenadas (Bloque 3, decision.py/greedy.py)
 sigue sin hablar el mismo modelo de zonas enteras que este endpoint -- este
@@ -30,27 +46,35 @@ no falla callado).
 
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from api.schemas import (
-    AlternativeConsidered,
     DecideRequest,
     DecideResponse,
     EconomicsBreakdown,
     ExplainDecisionResponse,
+    StatusResponse,
 )
+<<<<<<< HEAD
 from core.agent.economics import NEUTRAL_DEMAND_SCORE, evaluate_economics
 from core.agent.safety import evaluate_safety
 from core.models import DEFAULT_ZONE_MAP, VEHICLE_PROFILES, VehicleType
 
 MAX_REASON_WORDS = 40
+=======
+from core.agent import reasons
+from core.agent.economics import evaluate_economics
+from core.agent.journal import (
+    JOURNAL,
+    DecisionRecord,
+    in_flight_totals,
+    queue_offset_min,
+)
+from core.agent.safety import combine, evaluate_safety_full, profile_for
+from core.agent.strategy import STRATEGY
+>>>>>>> origin/integra/b3-b5
 
 router = APIRouter(tags=["decide"])
-
-# Log en memoria para GET /explain_decision/{order_id}. Un reinicio del
-# proceso lo vacia; para replay real (P2.2) esto debe respaldarse en el event
-# log JSONL (P1.1, Abraham), no aqui.
-_decision_log: dict[str, ExplainDecisionResponse] = {}
 
 
 def _order_total_time_min(request: DecideRequest) -> float:
@@ -61,7 +85,7 @@ def _order_total_time_min(request: DecideRequest) -> float:
     deriva de distancia + velocidad del perfil de vehiculo, tal como pide el
     schema ("if absent, derive from distance and speed").
     """
-    profile = VEHICLE_PROFILES[VehicleType(request.vehicle)]
+    profile = profile_for(request.vehicle)
 
     to_pickup_min = request.estimated_pickup_min
     if to_pickup_min is None:
@@ -77,6 +101,7 @@ def _order_total_time_min(request: DecideRequest) -> float:
     return pickup_ready_min + to_dropoff_min
 
 
+<<<<<<< HEAD
 def _zone_demand(zone_id: int) -> tuple[float, bool]:
     """(demand_score, zone_known) para `zone_id`.
 
@@ -99,8 +124,10 @@ def _clamp_reason(reason: str) -> str:
     return " ".join(words[:MAX_REASON_WORDS])
 
 
+=======
+>>>>>>> origin/integra/b3-b5
 @router.post("/decide", response_model=DecideResponse)
-async def decide(request: DecideRequest) -> DecideResponse:
+async def decide(request: DecideRequest, background: BackgroundTasks) -> DecideResponse:
     """Nunca debe devolver 500: un crash en la ventana de decision es un
     hard failure de Feasibility (evaluation_protocol.md seccion 7). El
     parseo del body ya paso por pydantic antes de llegar aqui (422 si el
@@ -111,10 +138,15 @@ async def decide(request: DecideRequest) -> DecideResponse:
     reason honesto en vez de propagarla.
     """
     t0 = time.perf_counter()
+    strategy = STRATEGY.snapshot()  # lectura de atributo: no bloquea, no falla
+    record: DecisionRecord | None = None
+
     try:
         overrides = request.courier_state_overrides
+        profile = profile_for(request.vehicle)
 
         total_time_min = _order_total_time_min(request)
+<<<<<<< HEAD
         demand_score, zone_known = _zone_demand(request.zone_pickup)
 
         economics = evaluate_economics(
@@ -127,6 +159,12 @@ async def decide(request: DecideRequest) -> DecideResponse:
         )
 
         violation = evaluate_safety(
+=======
+        in_flight_weight, in_flight_volume = in_flight_totals(overrides.in_flight_orders)
+        queue_offset = queue_offset_min(overrides.in_flight_orders, request.sim_time)
+
+        verdict = evaluate_safety_full(
+>>>>>>> origin/integra/b3-b5
             vehicle=request.vehicle,
             weight_kg=request.weight_kg,
             volume_liters=request.volume_liters,
@@ -135,8 +173,13 @@ async def decide(request: DecideRequest) -> DecideResponse:
             continuous_riding_min=overrides.continuous_riding_min,
             order_total_time_min=total_time_min,
             shift_end_time=overrides.shift_end_time,
+            in_flight_weight_kg=in_flight_weight,
+            in_flight_volume_liters=in_flight_volume,
+            last_break_end_time=overrides.last_break_end_time,
+            queue_offset_min=queue_offset,
         )
 
+<<<<<<< HEAD
         if violation is not None:
             decision: str = "SKIP"
             binding_constraint = violation.constraint
@@ -163,9 +206,43 @@ async def decide(request: DecideRequest) -> DecideResponse:
                     option="SKIP", rejected_because="pasa las 5 constraints y el salario de reserva"
                 )
             ]
+=======
+        economics = evaluate_economics(
+            base_pay_mxn=request.base_pay_mxn,
+            est_tip_mxn=request.est_tip_mxn,
+            surge_multiplier=request.surge_multiplier,
+            total_time_min=total_time_min,
+            deadhead_km=request.distance_pickup_km,
+            delivery_km=request.distance_delivery_km,
+            profile=profile,
+            zone_dropoff=request.zone_dropoff,
+            reservation_wage_mxn_hr=strategy.reservation_wage_mxn_hr,
+        )
 
-        reason = _clamp_reason(reason)
+        economic_accept = economics.adjusted_rate_mxn_hr >= economics.reservation_wage_mxn_hr
+        economic_reason = (
+            reasons.accepted(economics.adjusted_rate_mxn_hr, economics.reservation_wage_mxn_hr)
+            if economic_accept
+            else reasons.reservation_wage(
+                economics.adjusted_rate_mxn_hr,
+                economics.reservation_wage_mxn_hr,
+                economics.deadhead_km,
+            )
+        )
+
+        # La seguridad manda. Si `verdict.blocked`, los tres argumentos
+        # economicos se ignoran: la invariante safety-over-pay vive aqui, no
+        # en el orden de unos `if` que alguien pueda reordenar sin querer.
+        decision, reason, binding_constraint = combine(
+            verdict,
+            economic_accept=economic_accept,
+            economic_reason=economic_reason,
+            economic_binding=None if economic_accept else "reservation_wage",
+        )
+>>>>>>> origin/integra/b3-b5
+
         economics_breakdown = EconomicsBreakdown(**economics.__dict__)
+<<<<<<< HEAD
 
         explain_inputs = {
             "sim_time": request.sim_time.isoformat(),
@@ -186,14 +263,42 @@ async def decide(request: DecideRequest) -> DecideResponse:
             "deadhead_km": request.distance_pickup_km,
             "economics": economics.__dict__,
         }
+=======
+        record = DecisionRecord(
+            order=request,
+            overrides=overrides,
+            verdict=verdict,
+            decision=decision,
+            reason=reason,
+            binding_constraint=binding_constraint,
+            latency_ms=0.0,  # se fija abajo, cuando el reloj ya paro
+            tier="tier1",
+            degraded=strategy.degraded,
+            economics=economics.__dict__,
+            strategy={
+                "reservation_wage_mxn_hr": strategy.reservation_wage_mxn_hr,
+                "target_zone": strategy.target_zone,
+                "confidence": strategy.confidence,
+                "revision": strategy.revision,
+                "source": strategy.source,
+                "reasoning": strategy.reasoning,
+            },
+        )
+>>>>>>> origin/integra/b3-b5
     except Exception as exc:  # noqa: BLE001 -- deliberado, ver docstring
-        decision, binding_constraint, reason = "SKIP", None, f"error interno al evaluar la oferta: {exc}"
-        reason = _clamp_reason(reason)
+        decision, binding_constraint = "SKIP", None
+        reason = reasons.cap_words(f"error interno al evaluar la oferta: {exc}")
         economics_breakdown = None
-        alternatives = [AlternativeConsidered(option="ACCEPT", rejected_because=reason)]
-        explain_inputs = {"error": str(exc)}
 
     latency_ms = (time.perf_counter() - t0) * 1000
+
+    if record is not None:
+        # `record` es frozen: se reemplaza por una copia con la latencia real.
+        # Medir primero y registrar despues es lo correcto -- el numero que se
+        # reporta tiene que incluir todo el trabajo, no todo menos el ultimo paso.
+        JOURNAL.record(
+            DecisionRecord(**{**record.__dict__, "latency_ms": latency_ms})
+        )
 
     response = DecideResponse(
         order_id=request.order_id,
@@ -201,25 +306,75 @@ async def decide(request: DecideRequest) -> DecideResponse:
         reason=reason,
         binding_constraint=binding_constraint,
         latency_ms=latency_ms,
-        tier="tier1",  # sin capa tier2/LLM implementada todavia (P2.1)
-        degraded=False,
+        tier="tier1",  # las constraints de seguridad salen siempre del fast path
+        degraded=strategy.degraded,
         economics=economics_breakdown,
     )
 
-    _decision_log[request.order_id] = ExplainDecisionResponse(
-        order_id=request.order_id,
-        decision=decision,
-        reason=reason,
-        inputs=explain_inputs,
-        alternatives_considered=alternatives,
-    )
+    # ENTRE pings, nunca dentro: la tarea de fondo corre despues de que este
+    # response ya salio, y `maybe_refresh` ademas solo despacha (no espera al
+    # modelo) y respeta su intervalo en tiempo de simulacion. El protocolo es
+    # explicito: la capa de estrategia "runs between pings, never inside a
+    # decision window".
+    background.add_task(_refresh_strategy, request)
 
     return response
 
 
+def _refresh_strategy(request: DecideRequest) -> None:
+    """Le da a tier2 la oportunidad de revisar sus parametros.
+
+    Nada de lo que pase aqui puede afectar a la decision que ya se devolvio.
+    Si el modelo esta caido, `maybe_refresh` marca degradado y el siguiente
+    /decide lo reporta; ningun pedido espera por esto.
+    """
+    STRATEGY.maybe_refresh(
+        request.sim_time,
+        {
+            "sim_time": request.sim_time.isoformat(),
+            "vehicle": request.vehicle,
+            "zona_actual": request.zone_pickup,
+            "decisiones_registradas": len(JOURNAL),
+            "ultimas_decisiones": [
+                {"decision": r.decision, "binding_constraint": r.binding_constraint}
+                for r in JOURNAL.recent(10)
+            ],
+        },
+    )
+
+
 @router.get("/explain_decision/{order_id}", response_model=ExplainDecisionResponse)
 async def explain_decision(order_id: str) -> ExplainDecisionResponse:
-    record = _decision_log.get(order_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail=f"no hay decision registrada para order_id={order_id!r}")
-    return record
+    """"Why did you skip that order?" — contestado desde la bitacora, con los
+    numeros del momento de decidir, sin volver a correr el sistema."""
+    payload = JOURNAL.explain(order_id)
+    if payload is None:
+        raise HTTPException(
+            status_code=404, detail=f"no hay decision registrada para order_id={order_id!r}"
+        )
+    return ExplainDecisionResponse(**payload)
+
+
+@router.get("/status", response_model=StatusResponse)
+async def status() -> StatusResponse:
+    """Salud del servicio, incluido el modo degradado.
+
+    El protocolo exige que la caida del modelo se **señale**; un fallback
+    silencioso solo da credito parcial. Se señala por tres canales: el campo
+    `degraded` de cada respuesta de /decide, el evento `strategy_update` del
+    event log, y este endpoint.
+    """
+    health = STRATEGY.status()
+    params = STRATEGY.snapshot()
+    return StatusResponse(
+        degraded=health.degraded,
+        tier="tier1",
+        reservation_wage_mxn_hr=params.reservation_wage_mxn_hr,
+        strategy_revision=health.revision,
+        strategy_source=params.source,
+        strategy_reasoning=params.reasoning,
+        consecutive_model_failures=health.consecutive_failures,
+        last_model_error=health.last_error,
+        advisor=health.advisor,
+        decisions_recorded=len(JOURNAL),
+    )

@@ -61,12 +61,38 @@ class DecideRequest(BaseModel):
 
 
 class EconomicsBreakdown(BaseModel):
+    """Aritmetica de la decision. Los 6 primeros campos son los que nombra
+    `decision_response_schema.json`; los 4 ultimos son el desglose que hace
+    auditable el neto (combustible y valor de la zona de dropoff) cuando un
+    juez pausa una decision y pide las cuentas."""
+
     net_pay_mxn: float
     total_time_min: float
     raw_rate_mxn_hr: float
     adjusted_rate_mxn_hr: float
     reservation_wage_mxn_hr: float
     deadhead_km: float
+    gross_pay_mxn: float = 0.0
+    fuel_cost_mxn: float = 0.0
+    total_km: float = 0.0
+    dropoff_demand_score: float = 0.5
+
+
+class StatusResponse(BaseModel):
+    """Estado de salud del servicio. El protocolo (seccion 7) acepta que el
+    modo degradado se señale "through its response, logs or a status
+    endpoint" -- esto es el tercero de los tres."""
+
+    degraded: bool
+    tier: str
+    reservation_wage_mxn_hr: float
+    strategy_revision: int
+    strategy_source: str
+    strategy_reasoning: str
+    consecutive_model_failures: int
+    last_model_error: str | None
+    advisor: str
+    decisions_recorded: int
 
 
 class DecideResponse(BaseModel):
