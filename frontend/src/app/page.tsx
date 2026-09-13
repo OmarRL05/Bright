@@ -4,6 +4,13 @@ import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
 import DashboardFeed from "@/components/DashboardFeed";
 import { loadReplay, useAgent } from "@/hooks/useAgent";
+import {
+  CONSTRAINT_LABELS,
+  isSafetyConstraint,
+  type AgentStatus,
+  type BindingConstraint,
+  type DecisionEvent,
+} from "@/lib/types";
 
 // Leaflet toca `window` al importarse -- sin ssr:false, el primer render en
 // el servidor revienta. Ver frontend/AGENTS.md sobre no asumir el Next.js
@@ -12,26 +19,25 @@ import { loadReplay, useAgent } from "@/hooks/useAgent";
 const Map = dynamic(() => import("@/components/Map").then((m) => m.Map), {
   ssr: false,
   loading: () => (
-    <div className="flex h-full min-h-96 w-full items-center justify-center rounded-lg border border-gray-200 text-sm text-gray-400 dark:border-gray-800">
+    <div className="flex h-full items-center justify-center border border-line text-sm text-muted">
       Cargando mapa…
     </div>
   ),
 });
-import {
-  CONSTRAINT_LABELS,
-  isSafetyConstraint,
-  type BindingConstraint,
-  type DecisionEvent,
-} from "@/lib/types";
 
 /**
- * Dashboard (Bloque 6, P2.3).
+ * Consola de operaciones del agente (Bloque 6, P2.3).
  *
- * Todo lo que se pinta aquí sale de `GET /decisions` y `GET /status`. No hay
- * datos de relleno: si el backend no contesta, la pantalla lo dice en vez de
- * enseñar números que no son de nadie. Un dashboard con cifras inventadas es
- * peor que uno vacío en una evaluación donde "¿por qué debería confiar en ese
- * número?" es una de las preguntas escritas.
+ * Todo lo que se pinta sale de `GET /decisions`, `/status`, `/zones` y
+ * `/shocks`. No hay datos de relleno: si el backend no contesta, la pantalla
+ * lo dice en vez de enseñar números que no son de nadie. Un dashboard con
+ * cifras inventadas es peor que uno vacío en una evaluación donde "¿por qué
+ * debería confiar en ese número?" es una de las preguntas escritas.
+ *
+ * La jerarquía no es casual. Un dashboard normal pone arriba lo que crece;
+ * aquí lo que importa son los **rechazos** y la regla que los causó, así que
+ * el libro de decisiones ocupa una columna entera a altura completa y todo lo
+ * demás le hace sitio.
  */
 export default function Home() {
   const { decisions, status, replays, connected, error } = useAgent(50);
@@ -47,86 +53,98 @@ export default function Home() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col gap-5 bg-zinc-50 p-6 font-sans dark:bg-black">
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold">The Courier — HackMTY 2026</h1>
-          <p className="text-xs text-gray-500">
-            {enVivo ? "Decisiones en vivo" : `Reproduciendo turno seed=${replaySeed}`}
-          </p>
-        </div>
+    <div className="min-h-screen bg-ink px-5 py-4 text-text">
+      <header className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2 border-b border-line pb-3">
+        <h1 className="text-lg font-medium tracking-tight">The Courier</h1>
 
-        <div className="flex items-center gap-3 text-sm">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs">
+          <span className="text-muted">
+            {enVivo ? "Decisiones en vivo" : `Turno grabado, seed ${replaySeed}`}
+          </span>
           {status?.degraded && (
-            <span className="rounded bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-              MODO DEGRADADO · estrategia de respaldo
+            <span className="border border-safety px-2 py-0.5 font-medium text-safety">
+              Modo degradado — decidiendo con la última estrategia conocida
             </span>
           )}
-          <span className={connected ? "text-emerald-600" : "text-rose-500"}>
-            {connected ? "● backend conectado" : "○ sin backend"}
+          <span className={connected ? "text-go" : "text-alert"}>
+            {connected ? "Backend conectado" : "Sin backend"}
           </span>
         </div>
       </header>
 
       {error && (
-        <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-300">
-          No se pudo leer el backend: {error}
-          <span className="ml-1 text-rose-600 dark:text-rose-400">
-            Arráncalo con <code>uvicorn main:app --port 8000</code>.
-          </span>
-        </div>
+        <p className="mt-3 border border-alert px-4 py-2.5 text-sm text-alert">
+          No se pudo leer el backend: {error}. Arráncalo con{" "}
+          <code className="font-mono">uvicorn main:app --port 8000</code>.
+        </p>
       )}
 
-      <StatTiles decisions={visibles} status={status} />
+      <InstrumentStrip decisions={visibles} status={status} />
 
-      <section className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-3">
-        <div className="flex flex-col gap-2 lg:col-span-2">
-          <h2 className="text-sm font-medium text-gray-500">
-            Ruta {enVivo ? "en vivo" : `del turno grabado (seed=${replaySeed})`}
-          </h2>
-          <div className="h-[28rem]">
-            <Map decisions={visibles} live={enVivo} />
-          </div>
-        </div>
-
+      <main className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_26rem]">
         <div className="flex flex-col gap-4">
-          <ConstraintBreakdown decisions={visibles} />
-          <StrategyPanel status={status} />
-          <ReplayPanel
-            replays={replays}
-            activo={replaySeed}
-            onVer={verReplay}
-            onVivo={() => {
-              setReplayEvents(null);
-              setReplaySeed(null);
-            }}
-          />
-        </div>
-      </section>
+          <section>
+            <SectionLabel>
+              {enVivo ? "Mapa de la operación" : "Mapa del turno grabado"}
+            </SectionLabel>
+            <div className="h-[30rem] border border-line">
+              <Map decisions={visibles} live={enVivo} />
+            </div>
+          </section>
 
-      <section>
-        <h2 className="mb-2 text-sm font-medium text-gray-500">
-          Decisiones {enVivo ? "" : "(grabadas)"}
-        </h2>
-        <DashboardFeed
-          decisions={visibles}
-          emptyMessage={
-            connected
-              ? "Aún no hay decisiones. Manda un ping a POST /decide o corre scripts/demo.py."
-              : "Sin backend: no hay nada que mostrar."
-          }
+          <Blocking decisions={visibles} />
+        </div>
+
+        <section className="flex min-h-[30rem] flex-col lg:h-[calc(100vh-13rem)]">
+          <SectionLabel>Libro de decisiones</SectionLabel>
+          <div className="min-h-0 flex-1">
+            <DashboardFeed
+              decisions={visibles}
+              emptyMessage={
+                connected
+                  ? "Sin decisiones todavía. Manda un ping a POST /decide o corre scripts/demo.py."
+                  : "Sin backend: no hay nada que mostrar."
+              }
+            />
+          </div>
+        </section>
+      </main>
+
+      <footer className="mt-4 grid gap-4 md:grid-cols-2">
+        <Strategy status={status} />
+        <Replays
+          replays={replays}
+          activo={replaySeed}
+          onVer={verReplay}
+          onVivo={() => {
+            setReplayEvents(null);
+            setReplaySeed(null);
+          }}
         />
-      </section>
+      </footer>
     </div>
   );
 }
 
-function StatTiles({
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return <h2 className="mb-1.5 text-xs text-muted">{children}</h2>;
+}
+
+/**
+ * Los cuatro números que describen el estado del agente, en una banda única
+ * separada por filetes.
+ *
+ * No son cuatro tarjetas: cuatro cajas idénticas dicen "estas cosas son del
+ * mismo tipo y ninguna importa más", y aquí la peor latencia y el salario de
+ * reserva son magnitudes distintas que se leen de un vistazo, no elementos de
+ * una colección.
+ */
+function InstrumentStrip({
   decisions,
   status,
 }: {
   decisions: DecisionEvent[];
-  status: { reservation_wage_mxn_hr: number } | null;
+  status: AgentStatus | null;
 }) {
   const stats = useMemo(() => {
     const total = decisions.length;
@@ -134,139 +152,152 @@ function StatTiles({
     const latencias = decisions.map((d) => d.latency_ms);
     return {
       total,
+      aceptadas,
       aceptacion: total ? (aceptadas / total) * 100 : 0,
       latenciaMax: latencias.length ? Math.max(...latencias) : 0,
     };
   }, [decisions]);
 
   return (
-    <section className="grid grid-cols-2 gap-3 md:grid-cols-4">
-      <Tile label="Decisiones" value={String(stats.total)} />
-      <Tile label="Tasa de aceptación" value={`${stats.aceptacion.toFixed(1)}%`} />
-      <Tile
-        label="Latencia máx."
-        value={`${stats.latenciaMax.toFixed(2)} ms`}
-        hint="presupuesto 50 ms"
+    <dl className="mt-4 grid grid-cols-2 border border-line bg-panel md:grid-cols-4">
+      <Reading
+        valor={String(stats.total)}
+        etiqueta="Ofertas evaluadas"
+        nota={`${stats.aceptadas} aceptadas`}
       />
-      <Tile
-        label="Salario de reserva"
-        value={status ? `$${status.reservation_wage_mxn_hr.toFixed(0)}/hr` : "—"}
+      <Reading
+        valor={`${stats.aceptacion.toFixed(1)}%`}
+        etiqueta="Se acepta"
+        nota="de las ofertas que llegaron"
       />
-    </section>
+      <Reading
+        valor={`${stats.latenciaMax.toFixed(2)} ms`}
+        etiqueta="Peor latencia"
+        nota="tope del protocolo: 50 ms"
+        bien={stats.latenciaMax < 50}
+      />
+      <Reading
+        valor={status ? `$${status.reservation_wage_mxn_hr.toFixed(0)}` : "—"}
+        etiqueta="Salario de reserva"
+        nota="por hora; bajo esto se rechaza"
+      />
+    </dl>
   );
 }
 
-function Tile({
-  label,
-  value,
-  hint,
+function Reading({
+  valor,
+  etiqueta,
+  nota,
+  bien,
 }: {
-  label: string;
-  value: string;
-  hint?: string;
+  valor: string;
+  etiqueta: string;
+  nota: string;
+  bien?: boolean;
 }) {
+  const tono = bien === undefined ? "" : bien ? "text-go" : "text-alert";
   return (
-    <div className="rounded-lg border border-gray-200 bg-white px-4 py-3 dark:border-gray-800 dark:bg-gray-950">
-      <dt className="text-xs text-gray-500">{label}</dt>
-      <dd className="mt-0.5 text-xl font-semibold tabular-nums">{value}</dd>
-      {hint && <p className="text-[11px] text-gray-400">{hint}</p>}
+    <div className="border-line px-4 py-3 [&:not(:last-child)]:border-r">
+      <dd className={`tabular text-2xl font-medium tracking-tight ${tono}`}>{valor}</dd>
+      <dt className="mt-0.5 text-[13px]">{etiqueta}</dt>
+      <p className="text-[11px] text-muted">{nota}</p>
     </div>
   );
 }
 
-/** Qué constraints están mordiendo. Sale de los datos, no de una lista fija. */
-function ConstraintBreakdown({ decisions }: { decisions: DecisionEvent[] }) {
-  // Un objeto y no `new Map()`: el nombre `Map` ya lo ocupa el componente
-  // del mapa importado arriba, y la colision compila a `any` en silencio.
-  const conteo = useMemo(() => {
+/**
+ * Qué constraints están mordiendo, como distribución y no como lista.
+ *
+ * Es una distribución: tiene forma, y una barra la enseña de un vistazo
+ * mientras que una lista con viñetas obliga a comparar cifras a mano. El color
+ * es el mismo del libro de decisiones — ámbar si paró la seguridad, pizarra si
+ * pararon las cuentas — así que no necesita leyenda.
+ */
+function Blocking({ decisions }: { decisions: DecisionEvent[] }) {
+  const filas = useMemo(() => {
     const total: Partial<Record<BindingConstraint, number>> = {};
     for (const decision of decisions) {
       const constraint = decision.binding_constraint;
       if (!constraint) continue;
       total[constraint] = (total[constraint] ?? 0) + 1;
     }
-    return (Object.entries(total) as [BindingConstraint, number][]).sort(
+    const entradas = (Object.entries(total) as [BindingConstraint, number][]).sort(
       (a, b) => b[1] - a[1],
     );
+    const tope = entradas[0]?.[1] ?? 1;
+    return entradas.map(([constraint, veces]) => ({
+      constraint,
+      veces,
+      ancho: (veces / tope) * 100,
+    }));
   }, [decisions]);
 
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-950">
-      <h3 className="text-sm font-medium text-gray-500">Qué está bloqueando</h3>
-      {conteo.length === 0 ? (
-        <p className="mt-2 text-xs text-gray-400">
-          Ninguna constraint ha mordido todavía.
-        </p>
-      ) : (
-        <ul className="mt-2 space-y-1.5">
-          {conteo.map(([constraint, veces]) => (
-            <li key={constraint} className="flex items-baseline justify-between gap-2">
-              <span className="flex items-center gap-1.5 text-xs">
-                <span
-                  className={
-                    isSafetyConstraint(constraint)
-                      ? "inline-block h-2 w-2 rounded-full bg-amber-500"
-                      : "inline-block h-2 w-2 rounded-full bg-gray-400"
-                  }
+    <section>
+      <SectionLabel>Qué está bloqueando</SectionLabel>
+      <div className="border border-line bg-panel px-4 py-3">
+        {filas.length === 0 ? (
+          <p className="text-xs text-muted">Ninguna constraint ha mordido todavía.</p>
+        ) : (
+          <ul className="space-y-2">
+            {filas.map(({ constraint, veces, ancho }) => (
+              <li key={constraint}>
+                <div className="flex items-baseline justify-between gap-3 text-xs">
+                  <span>{CONSTRAINT_LABELS[constraint]}</span>
+                  <span className="tabular font-mono text-muted">{veces}</span>
+                </div>
+                <div
+                  className={`mt-1 h-1 ${isSafetyConstraint(constraint) ? "bg-safety" : "bg-pay"}`}
+                  style={{ width: `${Math.max(ancho, 3)}%` }}
                 />
-                {CONSTRAINT_LABELS[constraint]}
-              </span>
-              <span className="tabular-nums text-xs font-semibold">{veces}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-      <p className="mt-3 text-[11px] text-gray-400">
-        Ámbar = seguridad · gris = economía
-      </p>
-    </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
   );
 }
 
-function StrategyPanel({
-  status,
-}: {
-  status: {
-    degraded: boolean;
-    advisor: string;
-    strategy_source: string;
-    strategy_revision: number;
-    strategy_reasoning: string;
-    last_model_error: string | null;
-  } | null;
-}) {
+function Strategy({ status }: { status: AgentStatus | null }) {
   if (!status) return null;
 
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-950">
-      <h3 className="text-sm font-medium text-gray-500">Capa de estrategia (tier2)</h3>
-      <dl className="mt-2 space-y-1 text-xs">
-        <Row label="advisor" value={status.advisor} />
-        <Row label="fuente" value={status.strategy_source} />
-        <Row label="revisión" value={String(status.strategy_revision)} />
-      </dl>
-      <p className="mt-2 text-[11px] leading-relaxed text-gray-500">
-        {status.strategy_reasoning}
-      </p>
-      {status.last_model_error && (
-        <p className="mt-2 rounded bg-amber-50 px-2 py-1 text-[11px] text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-          {status.last_model_error}
+    <section>
+      <SectionLabel>Capa de estrategia</SectionLabel>
+      <div className="border border-line bg-panel px-4 py-3 text-xs">
+        <dl className="grid grid-cols-3 gap-x-4 gap-y-1">
+          <Dato etiqueta="Modelo" valor={status.advisor} />
+          <Dato etiqueta="Origen" valor={status.strategy_source} />
+          <Dato etiqueta="Revisión" valor={String(status.strategy_revision)} />
+        </dl>
+        <p className="mt-2.5 max-w-[62ch] leading-relaxed text-muted">
+          {status.strategy_reasoning}
         </p>
-      )}
-    </div>
+        {status.last_model_error && (
+          <p className="mt-2 border-l-2 border-safety pl-2 font-mono text-[11px] text-safety">
+            {status.last_model_error}
+          </p>
+        )}
+        <p className="mt-2.5 max-w-[62ch] text-[11px] leading-relaxed text-muted">
+          Distancias — {status.distance_model}
+        </p>
+      </div>
+    </section>
   );
 }
 
-function Row({ label, value }: { label: string; value: string }) {
+function Dato({ etiqueta, valor }: { etiqueta: string; valor: string }) {
   return (
-    <div className="flex justify-between gap-2">
-      <dt className="text-gray-400">{label}</dt>
-      <dd className="font-mono">{value}</dd>
+    <div>
+      <dt className="text-[11px] text-muted">{etiqueta}</dt>
+      <dd className="font-mono">{valor}</dd>
     </div>
   );
 }
 
-function ReplayPanel({
+function Replays({
   replays,
   activo,
   onVer,
@@ -278,41 +309,41 @@ function ReplayPanel({
   onVivo: () => void;
 }) {
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-950">
-      <h3 className="text-sm font-medium text-gray-500">Turnos grabados</h3>
-      {replays.length === 0 ? (
-        <p className="mt-2 text-[11px] text-gray-400">
-          Ninguno. Graba uno con <code>scripts/run_evaluation.py --event-log</code>.
-        </p>
-      ) : (
-        <ul className="mt-2 space-y-1">
-          {replays.map((replay) => (
-            <li key={replay.seed}>
+    <section>
+      <SectionLabel>Turnos grabados</SectionLabel>
+      <div className="border border-line bg-panel px-4 py-3">
+        {replays.length === 0 ? (
+          <p className="text-xs text-muted">
+            Ninguno todavía. Graba uno con{" "}
+            <code className="font-mono">scripts/replay.py --seed N --record</code>.
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {replays.map((replay) => (
               <button
+                key={replay.seed}
                 onClick={() => onVer(replay.seed)}
-                className={
+                aria-pressed={activo === replay.seed}
+                className={`border px-2.5 py-1 font-mono text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-go ${
                   activo === replay.seed
-                    ? "w-full rounded bg-gray-900 px-2 py-1 text-left text-xs text-white dark:bg-gray-100 dark:text-gray-900"
-                    : "w-full rounded px-2 py-1 text-left text-xs hover:bg-gray-100 dark:hover:bg-gray-800"
-                }
+                    ? "border-go text-go"
+                    : "border-line text-muted hover:border-muted hover:text-text"
+                }`}
               >
                 seed {replay.seed}
-                <span className="ml-2 text-gray-400">
-                  {(replay.bytes / 1024).toFixed(0)} KB
-                </span>
               </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      {activo !== null && (
-        <button
-          onClick={onVivo}
-          className="mt-2 w-full rounded border border-gray-300 px-2 py-1 text-xs hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-900"
-        >
-          Volver a en vivo
-        </button>
-      )}
-    </div>
+            ))}
+            {activo !== null && (
+              <button
+                onClick={onVivo}
+                className="border border-line px-2.5 py-1 text-xs text-muted hover:border-muted hover:text-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-go"
+              >
+                Volver a en vivo
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </section>
   );
 }

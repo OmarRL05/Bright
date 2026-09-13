@@ -57,6 +57,16 @@ export interface AgentStatus {
   last_model_error: string | null;
   advisor: string;
   decisions_recorded: number;
+  /**
+   * Como mide distancias el sistema, en sus propias palabras. Corre a dos
+   * velocidades a proposito: las DECISIONES usan haversine por un factor de
+   * rodeo (barato y sin dependencias) y el MAPA dibuja calle real cuando el
+   * grafo vial esta descargado. Se lee de aqui y no se escribe a mano para
+   * que el rotulo no envejezca el dia que eso cambie.
+   */
+  distance_model: string;
+  road_detour_factor: number;
+  route_geometry_available: boolean;
 }
 
 /** Una entrada de GET /replays. */

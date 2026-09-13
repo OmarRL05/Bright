@@ -11,39 +11,39 @@ interface DashboardFeedProps {
 }
 
 /**
- * Feed de decisiones (P2.3).
+ * El libro de decisiones (P2.3).
  *
- * El requisito del bloque es literal: `binding_constraint` visible en el
- * feed. Sin él, un rechazo se lee como "no quiso" y no se distingue una
- * refusal de seguridad de una de dinero -- que es justo lo que el contrato
- * oficial pide poder distinguir sin leer la prosa. Por eso el id crudo se
- * muestra tal cual además de la etiqueta legible: es el valor que un juez
- * compara contra el enum del schema.
+ * El requisito del bloque es literal: `binding_constraint` visible en el feed.
+ * Pero el requisito de fondo es más exigente — el protocolo dice que un juez
+ * pregunta "¿por qué saltaste ese pedido?" y espera la respuesta en menos de
+ * diez segundos. Diez segundos no alcanzan para leer prosa, así que cada fila
+ * lleva una **regla de color a la izquierda** que dice, antes que ninguna
+ * palabra, si bloqueó la seguridad o si no salieron las cuentas.
  *
- * Las refusals de seguridad se pintan en ámbar y las de paga en gris: son
- * dos cosas distintas y el color lo dice antes que el texto.
+ * Filas planas y sin tarjetas: esto es un registro y un registro se escanea en
+ * vertical. Cajas redondeadas separadas romperían ese barrido.
  */
 export default function DashboardFeed({
   decisions = [],
-  emptyMessage = "Aún no hay decisiones. Manda un ping a POST /decide o corre el ensayo.",
+  emptyMessage = "Sin decisiones todavía. Manda un ping a POST /decide o corre scripts/demo.py.",
 }: DashboardFeedProps) {
   if (!Array.isArray(decisions) || decisions.length === 0) {
     return (
-      <div className="flex h-96 items-center justify-center rounded-lg border border-dashed border-gray-300 bg-white p-6 text-center text-sm text-gray-400 dark:border-gray-700 dark:bg-gray-950">
+      <div className="flex h-full min-h-64 items-center justify-center border border-dashed border-line px-8 text-center text-sm leading-relaxed text-muted">
         {emptyMessage}
       </div>
     );
   }
 
   return (
-    <ul className="h-96 divide-y divide-gray-100 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-sm dark:divide-gray-800 dark:border-gray-800 dark:bg-gray-950">
+    <ol className="h-full overflow-y-auto border border-line bg-panel">
       {decisions.map((decision, index) => (
         <FeedRow
           key={`${decision.order_id}-${decision.sim_time ?? index}`}
           decision={decision}
         />
       ))}
-    </ul>
+    </ol>
   );
 }
 
@@ -52,55 +52,42 @@ function FeedRow({ decision }: { decision: DecisionEvent }) {
   const constraint = decision.binding_constraint;
   const safety = isSafetyConstraint(constraint);
 
-  return (
-    <li className="px-4 py-3">
-      <div className="flex items-baseline justify-between gap-3">
-        <div className="flex items-baseline gap-2">
-          <span className="font-mono text-xs text-gray-400">
-            {formatTime(decision.sim_time)}
-          </span>
-          <span className="font-mono text-sm font-semibold text-gray-900 dark:text-gray-100">
-            {decision.order_id}
-          </span>
-        </div>
+  // La regla de color: verde si entró, ámbar si la paró la seguridad, pizarra
+  // si la pararon las cuentas. Es lo único que hace falta ver para saber de
+  // qué clase de decisión se trata.
+  const regla = accepted
+    ? "border-l-go"
+    : safety
+      ? "border-l-safety"
+      : "border-l-pay";
+  const tono = accepted ? "text-go" : safety ? "text-safety" : "text-pay";
 
-        <span
-          className={
-            accepted
-              ? "rounded px-1.5 py-0.5 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200 dark:text-emerald-400 dark:ring-emerald-900"
-              : "rounded px-1.5 py-0.5 text-xs font-semibold text-rose-700 ring-1 ring-rose-200 dark:text-rose-400 dark:ring-rose-900"
-          }
-        >
-          {decision.decision}
-        </span>
+  return (
+    <li className={`border-b border-l-2 border-line px-4 py-3 ${regla}`}>
+      <div className="flex items-baseline gap-3">
+        <time className="tabular font-mono text-xs text-muted">
+          {formatTime(decision.sim_time)}
+        </time>
+        <span className="font-mono text-[13px]">{decision.order_id}</span>
+        <span className={`ml-auto font-mono text-xs ${tono}`}>{decision.decision}</span>
       </div>
 
       {constraint && (
-        <div className="mt-1.5 flex items-center gap-2">
-          <span
-            className={
-              safety
-                ? "rounded bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300"
-                : "rounded bg-gray-100 px-1.5 py-0.5 text-xs font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-            }
-          >
-            {safety ? "seguridad" : "economía"} · {CONSTRAINT_LABELS[constraint]}
-          </span>
-          <code className="text-xs text-gray-400">{constraint}</code>
-        </div>
+        <p className="mt-1.5 text-xs">
+          <span className={tono}>{safety ? "Seguridad" : "Economía"}</span>
+          <span className="text-muted"> — {CONSTRAINT_LABELS[constraint]}</span>
+          <code className="ml-2 font-mono text-[11px] opacity-60">{constraint}</code>
+        </p>
       )}
 
-      <p className="mt-1.5 text-xs leading-relaxed text-gray-600 dark:text-gray-400">
+      <p className="mt-1 max-w-[62ch] text-[13px] leading-relaxed text-muted">
         {decision.reason || "Sin motivo registrado"}
       </p>
 
-      <div className="mt-1 flex gap-3 text-[11px] text-gray-400">
-        <span>{decision.latency_ms.toFixed(2)} ms</span>
-        <span>{decision.tier}</span>
-        {decision.degraded && (
-          <span className="font-medium text-amber-600">degradado</span>
-        )}
-      </div>
+      <p className="tabular mt-1.5 font-mono text-[11px] text-muted opacity-60">
+        {decision.latency_ms.toFixed(2)} ms · {decision.tier}
+        {decision.degraded && <span className="text-safety"> · degradado</span>}
+      </p>
     </li>
   );
 }

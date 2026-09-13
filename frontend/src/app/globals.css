@@ -1,26 +1,85 @@
 @import "tailwindcss";
 
+/*
+ * Consola de operaciones, no dashboard de marketing.
+ *
+ * Tres colores de señal y ninguno decorativo: ámbar = la seguridad bloqueó,
+ * pizarra = el dinero no salió, verde = aceptado. Es la distinción que el
+ * contrato oficial pide poder hacer sin leer la prosa (`binding_constraint`
+ * existe para eso), así que la pantalla la hace con color antes que con texto.
+ *
+ * El fondo es pizarra fría, no negro teñido: un mapa oscuro encima de negro
+ * puro pierde el relieve del terreno, y aquí el mapa es la mitad de la vista.
+ */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --ink: #0e1418; /* fondo */
+  --panel: #151e24; /* superficies elevadas */
+  --line: #24313a; /* filetes */
+  --text: #d5e0e6;
+  --muted: #7a8d99;
+
+  --safety: #e0a33e; /* refusal por una constraint de seguridad */
+  --pay: #7c99ab; /* refusal por el umbral de paga */
+  --go: #4fb286; /* aceptado */
+  --alert: #e0685f; /* el backend no responde */
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-ink: var(--ink);
+  --color-panel: var(--panel);
+  --color-line: var(--line);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-safety: var(--safety);
+  --color-pay: var(--pay);
+  --color-go: var(--go);
+  --color-alert: var(--alert);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+body {
+  background: var(--ink);
+  color: var(--text);
+  /* El scaffold ponia Arial aqui y pisaba la Geist que layout.tsx carga: la
+     fuente estaba descargada y no se usaba. `next/font` la sirve desde el
+     propio bundle, asi que sigue funcionando con la red apagada -- que es
+     parte del ensayo del protocolo, no una hipotesis. */
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  font-feature-settings: "cv11", "ss01";
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* Cifras que se comparan en columna: mismo ancho o el ojo no puede alinearlas. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Leaflet se pinta claro por defecto y aqui va sobre pizarra. */
+.leaflet-container {
+  background: #0b1116;
+}
+
+.leaflet-control-zoom a {
+  background: var(--panel);
+  color: var(--text);
+  border-color: var(--line);
+}
+
+.leaflet-control-attribution {
+  background: rgba(14, 20, 24, 0.75);
+  color: var(--muted);
+}
+
+.leaflet-control-attribution a {
+  color: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
