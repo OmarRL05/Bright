@@ -20,7 +20,7 @@ import pytest
 from core.agent import strategy as st
 from core.agent.reasons import MAX_REASON_WORDS
 from core.agent.strategy import (
-    ClaudeAdvisor,
+    GeminiAdvisor,
     ModelProposal,
     ModelUnavailable,
     NullAdvisor,
@@ -258,29 +258,29 @@ class TestCredencial:
     def test_sin_key_en_el_entorno_el_advisor_reporta_modelo_no_disponible(self, monkeypatch):
         """Es exactamente lo que hacen los jueces: invalidar la credencial
         en el entorno del proceso, a media corrida."""
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        with pytest.raises(ModelUnavailable, match="ANTHROPIC_API_KEY"):
-            ClaudeAdvisor().propose(CONTEXT)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        with pytest.raises(ModelUnavailable, match="GEMINI_API_KEY"):
+            GeminiAdvisor().propose(CONTEXT)
 
     def test_una_key_vacia_cuenta_como_ausente(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+        monkeypatch.setenv("GEMINI_API_KEY", "")
         with pytest.raises(ModelUnavailable):
-            ClaudeAdvisor().propose(CONTEXT)
+            GeminiAdvisor().propose(CONTEXT)
 
     def test_el_advisor_no_cachea_el_entorno_al_construirse(self, monkeypatch):
         """Un cliente construido al importar sobreviviria a la invalidacion y
         el requisito quedaria simulado, no implementado."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-de-mentiras")
-        advisor = ClaudeAdvisor()  # construido CON key
+        monkeypatch.setenv("GEMINI_API_KEY", "clave-de-mentiras")
+        advisor = GeminiAdvisor()  # construido CON key
 
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        with pytest.raises(ModelUnavailable, match="ANTHROPIC_API_KEY"):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        with pytest.raises(ModelUnavailable, match="GEMINI_API_KEY"):
             advisor.propose(CONTEXT)  # ...llamado SIN key
 
     def test_invalidar_la_key_a_media_corrida_degrada_y_restaurarla_recupera(self, monkeypatch):
         """El ensayo completo del protocolo, sin tocar la red.
 
-        Se usa un advisor que mira el entorno igual que ClaudeAdvisor, para
+        Se usa un advisor que mira el entorno igual que GeminiAdvisor, para
         recorrer el ciclo entero sin gastar una llamada real.
         """
 
@@ -288,22 +288,22 @@ class TestCredencial:
             name = "env-fake"
 
             def propose(self, context):
-                if not os.environ.get("ANTHROPIC_API_KEY"):
-                    raise ModelUnavailable("ANTHROPIC_API_KEY ausente o vacia en el entorno")
+                if not os.environ.get("GEMINI_API_KEY"):
+                    raise ModelUnavailable("GEMINI_API_KEY ausente o vacia en el entorno")
                 return ModelProposal(reservation_wage_mxn_hr=185.0, reasoning="todo normal")
 
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-de-mentiras")
+        monkeypatch.setenv("GEMINI_API_KEY", "clave-de-mentiras")
         layer = StrategyLayer(AdvisorQueMiraElEntorno())
 
         layer.refresh_now(T0, CONTEXT)
         assert layer.snapshot().degraded is False
 
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)  # los jueces
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)  # los jueces
         layer.refresh_now(T0 + timedelta(minutes=30), CONTEXT)
         assert layer.snapshot().degraded is True
         assert layer.snapshot().reservation_wage_mxn_hr == 185.0
 
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-de-mentiras")  # restaurada
+        monkeypatch.setenv("GEMINI_API_KEY", "clave-de-mentiras")  # restaurada
         layer.refresh_now(T0 + timedelta(minutes=60), CONTEXT)
         assert layer.snapshot().degraded is False
 
@@ -400,3 +400,132 @@ def test_lecturas_concurrentes_nunca_ven_parametros_a_medias():
         else:
             assert 100.0 <= wage <= 119.0
     assert validos  # el turno corrio
+
+
+# ==========================================================================
+# El transporte HTTP contra Gemini
+#
+# Se prueba contra un servidor local que imita la API: verifica la forma de la
+# peticion (que es lo que se descubriria tarde y en vivo) y el parseo de la
+# respuesta, sin credencial y sin salir a internet.
+# ==========================================================================
+
+
+class TestTransporteGemini:
+    @staticmethod
+    def _servidor(handler_factory):
+        """Levanta un servidor HTTP local y devuelve (url, registro, cerrar)."""
+        import json as _json
+        import threading as _threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        registro: dict = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802
+                largo = int(self.headers.get("Content-Length", 0))
+                registro["body"] = _json.loads(self.rfile.read(largo).decode())
+                registro["headers"] = dict(self.headers)
+                codigo, cuerpo = handler_factory()
+                datos = _json.dumps(cuerpo).encode()
+                self.send_response(codigo)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(datos)))
+                self.end_headers()
+                self.wfile.write(datos)
+
+            def log_message(self, *args):  # silencio en los tests
+                return
+
+        servidor = HTTPServer(("127.0.0.1", 0), Handler)
+        hilo = _threading.Thread(target=servidor.serve_forever, daemon=True)
+        hilo.start()
+        url = f"http://127.0.0.1:{servidor.server_port}/v1beta/models/{{model}}:generateContent"
+        return url, registro, servidor.shutdown
+
+    def _advisor_contra(self, monkeypatch, url):
+        monkeypatch.setenv("GEMINI_API_KEY", "clave-de-mentiras")
+        monkeypatch.setattr(st, "GEMINI_ENDPOINT", url)
+        return GeminiAdvisor(timeout_seconds=5)
+
+    def test_manda_la_clave_en_la_cabecera_no_en_la_url(self, monkeypatch):
+        """En la URL acabaria en los logs de acceso de cualquier proxy."""
+        url, registro, cerrar = self._servidor(
+            lambda: (200, {"candidates": [{"content": {"parts": [{"text": '{"reservation_wage_mxn_hr": 300}'}]}}]})
+        )
+        try:
+            self._advisor_contra(monkeypatch, url).propose({"zona": 7})
+        finally:
+            cerrar()
+
+        cabeceras = {k.lower(): v for k, v in registro["headers"].items()}
+        assert cabeceras["x-goog-api-key"] == "clave-de-mentiras"
+        assert "clave-de-mentiras" not in url
+
+    def test_la_peticion_tiene_la_forma_que_espera_la_api(self, monkeypatch):
+        """Es lo que se descubriria tarde: una clave mal escrita en el cuerpo
+        no falla al importar, falla el dia de la demo."""
+        url, registro, cerrar = self._servidor(
+            lambda: (200, {"candidates": [{"content": {"parts": [{"text": '{"reservation_wage_mxn_hr": 300}'}]}}]})
+        )
+        try:
+            self._advisor_contra(monkeypatch, url).propose({"zona": 7})
+        finally:
+            cerrar()
+
+        cuerpo = registro["body"]
+        assert "systemInstruction" in cuerpo
+        assert cuerpo["generationConfig"]["responseMimeType"] == "application/json"
+        assert "zona" in cuerpo["contents"][0]["parts"][0]["text"]
+
+    def test_lee_la_propuesta_de_la_respuesta(self, monkeypatch):
+        url, _, cerrar = self._servidor(
+            lambda: (
+                200,
+                {"candidates": [{"content": {"parts": [{"text": '{"reservation_wage_mxn_hr": 312, "confidence": "high", "reasoning": "surge"}'}]}}]},
+            )
+        )
+        try:
+            propuesta = self._advisor_contra(monkeypatch, url).propose({})
+        finally:
+            cerrar()
+        assert propuesta.reservation_wage_mxn_hr == 312.0
+        assert propuesta.confidence == "high"
+
+    def test_un_error_http_es_una_caida_con_su_codigo(self, monkeypatch):
+        """400 con API_KEY_INVALID es la credencial revocada -- justo lo que
+        hacen los jueces. El codigo tiene que llegar a status() para poder
+        diagnosticarlo en vivo."""
+        url, _, cerrar = self._servidor(
+            lambda: (400, {"error": {"message": "API key not valid. Please pass a valid API key."}})
+        )
+        try:
+            with pytest.raises(ModelUnavailable, match="HTTP 400"):
+                self._advisor_contra(monkeypatch, url).propose({})
+        finally:
+            cerrar()
+
+    def test_una_respuesta_con_otra_forma_es_una_caida_no_una_excepcion(self, monkeypatch):
+        """Un modelo que contesta cualquier cosa es tan inservible como el que
+        no contesta, y tiene que degradar por el mismo camino."""
+        url, _, cerrar = self._servidor(lambda: (200, {"otra": "forma"}))
+        try:
+            with pytest.raises(ModelUnavailable, match="ilegible"):
+                self._advisor_contra(monkeypatch, url).propose({})
+        finally:
+            cerrar()
+
+    def test_una_caida_real_degrada_la_capa_y_conserva_el_umbral(self, monkeypatch):
+        """El ciclo completo con transporte de verdad: la capa queda degradada
+        y el salario de reserva no se mueve."""
+        url, _, cerrar = self._servidor(lambda: (503, {"error": {"message": "overloaded"}}))
+        try:
+            layer = StrategyLayer(self._advisor_contra(monkeypatch, url))
+            antes = layer.snapshot().reservation_wage_mxn_hr
+            layer.refresh_now(T0, CONTEXT)
+        finally:
+            cerrar()
+
+        assert layer.snapshot().degraded is True
+        assert layer.snapshot().reservation_wage_mxn_hr == antes
+        assert "HTTP 503" in layer.status().last_error

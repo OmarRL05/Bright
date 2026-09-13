@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from core.agent.journal import JOURNAL
-from core.agent.strategy import STRATEGY, ClaudeAdvisor, NullAdvisor, StrategyLayer
+from core.agent.strategy import STRATEGY, GeminiAdvisor, NullAdvisor, StrategyLayer
 
 PROBE = {
     "order_id": "FORMAT-PROBE-001",
@@ -116,13 +116,13 @@ class TestModoDegradado:
     def test_sin_credencial_al_arrancar_no_se_reporta_degradado(self, monkeypatch):
         """"Sin modelo configurado" NO es lo mismo que "el modelo se cayo".
 
-        Si se conecta ClaudeAdvisor sin credencial, el primer refresco falla y
+        Si se conecta GeminiAdvisor sin credencial, el primer refresco falla y
         TODAS las respuestas salen con `degraded: true` desde el primer ping.
         Un juez lo lee como "este sistema esta roto", que es lo contrario de lo
         que el flag significa -- y ademas mata el ensayo, porque no se puede
         demostrar la transicion sano -> degradado si arranca degradado.
         """
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
         capa = StrategyLayer()
         monkeypatch.setattr("core.agent.strategy.STRATEGY", capa)
 
@@ -133,7 +133,7 @@ class TestModoDegradado:
             assert c.post("/decide", json=PROBE).json()["degraded"] is False
 
     def test_con_credencial_al_arrancar_si_se_conecta_el_advisor(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-de-mentiras")
+        monkeypatch.setenv("GEMINI_API_KEY", "clave-de-mentiras")
         capa = StrategyLayer()
         monkeypatch.setattr("core.agent.strategy.STRATEGY", capa)
         monkeypatch.setattr("main.STRATEGY", capa)
@@ -141,7 +141,7 @@ class TestModoDegradado:
         import main
 
         with TestClient(main.app):
-            assert isinstance(capa._advisor, ClaudeAdvisor)
+            assert isinstance(capa._advisor, GeminiAdvisor)
 
     def test_el_flag_degradado_viaja_a_la_respuesta(self, client, monkeypatch):
         from core.agent.strategy import ModelUnavailable

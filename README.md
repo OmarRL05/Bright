@@ -16,7 +16,7 @@ stream de eventos.
 |---|---|
 | Backend | Python 3.12, FastAPI, WebSockets nativo |
 | Ruteo / optimización | Google OR-Tools (VRPTW), OSMnx + NetworkX |
-| Capa de estrategia (tier2) | API de Claude (`claude-opus-5`), fuera de la ventana de decisión |
+| Capa de estrategia (tier2) | API de Gemini (`gemini-flash-latest`), fuera de la ventana de decisión |
 | Frontend | Next.js 16 (App Router) + TypeScript + Tailwind CSS |
 | Estado | En memoria, con locks + versionado optimista (sin base de datos externa) |
 
@@ -31,7 +31,7 @@ aquí es un TODO de verdad.
 | 2 — Estado | `core/simulation/state.py` | ✅ Locks, versión optimista, `tick()`, posición interpolada, `validate_windows()` |
 | 3 — Decisión | `api/decide.py`, `core/agent/safety.py`, `economics.py`, `reasons.py`, `journal.py` | ✅ Fast path completo, 5 constraints, explicabilidad. **Es el único camino de decisión** |
 | — Shocks en vivo | `core/agent/shocks.py`, `POST /shock` | ✅ Los 4 tipos, con efecto medible en la decisión siguiente |
-| — Estrategia tier2 | `core/agent/strategy.py` | ✅ `ClaudeAdvisor` + modo degradado + recuperación |
+| — Estrategia tier2 | `core/agent/strategy.py` | ✅ `GeminiAdvisor` (HTTP directo) + modo degradado + recuperación |
 | — Evaluación | `core/evaluation/`, `scripts/run_evaluation.py`, `scripts/calibrate.py` | ✅ 7 políticas, seeds disjuntas, calibración reproducible, CSV del template |
 | — Replay | `core/evaluation/replay.py`, `scripts/replay.py` | ✅ Graba, reproduce y difea: 201 decisiones sin diferencias, en proceso y por HTTP |
 | — Ensayo de demo | `scripts/demo.py` | ✅ 6 escenas autoverificadas contra el endpoint vivo |
@@ -85,7 +85,7 @@ Health check: `http://localhost:8000/health`. Tests: `pytest`.
 > **Nota sobre `osmnx`**: instala varias dependencias geoespaciales
 > (geopandas, shapely, pyogrio). Si falla, actualiza `pip` antes de reintentar.
 
-`ANTHROPIC_API_KEY` es **opcional**: sin ella el sistema corre entero y decide
+`GEMINI_API_KEY` es **opcional**: sin ella el sistema corre entero y decide
 igual de bien, solo que tier2 nunca propone nada. Con ella, quitarla a media
 corrida es lo que dispara el modo degradado — que es justo lo que los jueces
 prueban (ver "Modo degradado" abajo).
@@ -239,7 +239,7 @@ Los jueces invalidan la credencial a media corrida. Para ensayarlo:
 
 ```bash
 curl localhost:8000/status                      # degraded: false
-unset ANTHROPIC_API_KEY                         # (o pon una inválida)
+unset GEMINI_API_KEY                         # (o pon una inválida)
 # ...siguiente /decide dispara el refresco de tier2, que falla
 curl localhost:8000/status                      # degraded: true, last_model_error
 ```

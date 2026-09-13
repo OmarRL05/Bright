@@ -361,7 +361,7 @@ def _escena_e(base_url: str) -> bool:
         # arrancar degradado destruye justo la transicion que hay que demostrar.
         print(f"\n  {ROJO}No se puede ensayar: tier2 no esta conectado (advisor={estado['advisor']}).{FIN}")
         print("  El servidor tiene que arrancar CON credencial para que haya un modelo que caer:")
-        print(f"    {GRIS}export ANTHROPIC_API_KEY=...  &&  uvicorn main:app --port 8000{FIN}")
+        print(f"    {GRIS}export GEMINI_API_KEY=...  &&  uvicorn main:app --port 8000{FIN}")
         _veredicto(False, "escena no ensayada")
         return False
 

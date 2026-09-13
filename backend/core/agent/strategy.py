@@ -23,7 +23,7 @@ puede, y cuando no puede, lo que ya estaba publicado sigue sirviendo.
       sin lock                          ^
       sin red                           | reemplazo atomico del objeto
       sin esperas                       |
-                                      ClaudeAdvisor.propose()  (puede fallar)
+                                      GeminiAdvisor.propose()  (puede fallar)
 
 Cuatro invariantes, y como cada una esta garantizada
 ----------------------------------------------------
@@ -50,11 +50,10 @@ publicarse. Tier2 aconseja; no manda.
 Sobre la credencial: hay que leerla en cada llamada
 ----------------------------------------------------
 Los jueces invalidan la credencial **en el entorno del proceso, a media
-corrida**. Un `anthropic.Anthropic()` construido al importar el modulo se queda
-con la key vieja en memoria y seguiria funcionando: el ensayo saldria bien y la
-demo real fallaria. Por eso `ClaudeAdvisor` construye el cliente **dentro de
-cada llamada**, leyendo `os.environ` en ese momento. Es la diferencia entre
-haber implementado el requisito y haberlo simulado.
+corrida**. Un cliente construido al importar el modulo se queda con la clave
+vieja en memoria y seguiria funcionando: el ensayo saldria bien y la demo real
+fallaria. Por eso `GeminiAdvisor` lee `os.environ` **dentro de cada llamada**.
+Es la diferencia entre haber implementado el requisito y haberlo simulado.
 
 Replay
 ------
@@ -69,6 +68,8 @@ from __future__ import annotations
 import json
 import os
 import threading
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Literal, Protocol
@@ -122,7 +123,18 @@ MODEL_TIMEOUT_SECONDS = 15.0
 
 #: Modelo de la capa de estrategia. Nunca se llama dentro de la ventana de
 #: decision -- ver el docstring del modulo.
-MODEL_ID = "claude-opus-5"
+MODEL_ID = "gemini-flash-latest"
+
+#: Endpoint de la API de Gemini. La clave viaja en la cabecera
+#: `X-goog-api-key`, no en la URL: en la URL acabaria en los logs de acceso de
+#: cualquier proxy por el que pase.
+GEMINI_ENDPOINT = (
+    "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+)
+
+#: Variable de entorno con la credencial. Es lo que los jueces invalidan a
+#: media corrida para probar el requisito 7, asi que se lee en CADA llamada.
+GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
 
 Confidence = Literal["low", "medium", "high"]
 ParamsSource = Literal["bootstrap", "model", "recorded"]
@@ -213,23 +225,36 @@ class ModelUnavailable(RuntimeError):
     """El modelo no esta disponible: sin key, sin red, timeout o respuesta ilegible."""
 
 
-class ClaudeAdvisor:
-    """Tier2 real contra la API de Claude, fuera de la ventana de decision.
+class GeminiAdvisor:
+    """Tier2 real contra la API de Gemini, fuera de la ventana de decision.
 
-    Tres decisiones que importan para el ensayo del protocolo (seccion 7):
+    Cuatro decisiones que importan, tres de ellas por el ensayo del requisito 7
+    del protocolo (caida del modelo a media corrida):
 
-    1. **El cliente se construye en cada llamada**, leyendo `os.environ` en ese
-       momento. Un cliente cacheado al importar sobreviviria a que los jueces
-       invaliden la credencial y el requisito quedaria sin demostrar.
-    2. **`max_retries=0` y timeout corto.** En background los reintentos serian
-       gratis, pero alargan el hueco entre la caida y la señal de degradado --
-       y esa señal es justo lo que se esta evaluando.
-    3. **El SDK se importa perezosamente.** Si `anthropic` no esta instalado en
-       la maquina de la demo, eso se comporta igual que un modelo inalcanzable:
-       degradado, no crash.
+    1. **La credencial se lee en CADA llamada**, no al construir el advisor.
+       Un cliente que la capture al arrancar sobreviviria a que los jueces la
+       invaliden en el entorno del proceso, y el requisito quedaria simulado en
+       vez de implementado.
+    2. **Sin reintentos y con timeout corto.** En un hilo de fondo los
+       reintentos serian gratis, pero alargan el hueco entre la caida y la
+       señal de degradado -- y esa señal es justo lo que se evalua.
+    3. **Todo fallo es el mismo evento.** Credencial invalida, sin red,
+       timeout, cuota agotada, respuesta ilegible: para esta capa todos
+       significan "el modelo no esta". El detalle exacto se conserva en
+       `status()` para poder diagnosticar en vivo, pero no cambia el
+       comportamiento.
+    4. **urllib de la biblioteca estandar, no el SDK de Google.** Es una sola
+       peticion JSON corta que ya corre con cero reintentos: el SDK no aporta
+       nada que aqui se use, y si una dependencia mas que puede faltar en la
+       maquina de la demo. Menos piezas que puedan fallar en el unico camino
+       cuyo fallo hay que demostrar en vivo.
+
+    `response_mime_type: application/json` hace que la API garantice JSON, asi
+    que no hay que limpiar vallas de markdown como con otros proveedores. Si
+    aun asi llega algo ilegible, se trata como caida y no como excepcion.
     """
 
-    name = "claude"
+    name = "gemini"
     available = True
 
     def __init__(
@@ -244,52 +269,87 @@ class ClaudeAdvisor:
         "Eres la capa de estrategia de un agente repartidor. Ajustas el salario "
         "de reserva (MXN/hora) que el motor de decision usa para aceptar o "
         "rechazar pedidos. Nunca decides pedidos individuales.\n"
-        "Responde SOLO con un objeto JSON, sin texto alrededor, con las claves: "
+        "Responde SOLO con un objeto JSON con las claves: "
         '{"reservation_wage_mxn_hr": number, "target_zone": integer|null, '
         '"reasoning": string de menos de 30 palabras, '
         '"confidence": "low"|"medium"|"high"}'
     )
 
     def propose(self, context: dict[str, Any]) -> ModelProposal:
-        # La credencial primero: es lo que los jueces invalidan, y revisarla
-        # antes de importar nada mantiene el diagnostico exacto aunque el SDK
-        # tampoco este instalado.
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        api_key = os.environ.get(GEMINI_API_KEY_ENV)
         if not api_key:
-            raise ModelUnavailable("ANTHROPIC_API_KEY ausente o vacia en el entorno")
+            raise ModelUnavailable(f"{GEMINI_API_KEY_ENV} ausente o vacia en el entorno")
+
+        cuerpo = json.dumps(
+            {
+                "systemInstruction": {"parts": [{"text": self._SYSTEM}]},
+                "contents": [
+                    {"parts": [{"text": json.dumps(context, default=str, ensure_ascii=False)}]}
+                ],
+                # La API devuelve JSON valido o falla; no hay que desenvolver
+                # vallas de markdown ni adivinar donde empieza el objeto.
+                #
+                # camelCase a proposito: es la forma canonica del JSON de
+                # protobuf que usa la API REST. snake_case tambien se acepta,
+                # pero mezclarlos deja una ambiguedad que solo se descubre en
+                # vivo, y esta llamada corre en la demo.
+                "generationConfig": {"responseMimeType": "application/json"},
+            }
+        ).encode("utf-8")
+
+        peticion = urllib.request.Request(
+            GEMINI_ENDPOINT.format(model=self.model),
+            data=cuerpo,
+            headers={"Content-Type": "application/json", "X-goog-api-key": api_key},
+            method="POST",
+        )
 
         try:
-            import anthropic
-        except ImportError as exc:  # el SDK no esta instalado: mismo efecto que sin red
-            raise ModelUnavailable(f"SDK anthropic no disponible: {exc}") from exc
-
-        try:
-            client = anthropic.Anthropic(
-                api_key=api_key,
-                timeout=self.timeout_seconds,
-                max_retries=0,
-            )
-            response = client.messages.create(
-                model=self.model,
-                max_tokens=4096,
-                system=self._SYSTEM,
-                output_config={"effort": "low"},
-                messages=[{"role": "user", "content": json.dumps(context, default=str)}],
-            )
+            with urllib.request.urlopen(peticion, timeout=self.timeout_seconds) as respuesta:
+                payload = json.loads(respuesta.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            # El codigo importa para diagnosticar en vivo: 400 con
+            # API_KEY_INVALID es la credencial revocada (lo que hacen los
+            # jueces), 429 es cuota, 5xx es del proveedor.
+            raise ModelUnavailable(f"HTTP {exc.code} de Gemini: {_http_detail(exc)}") from exc
         except Exception as exc:
-            # Credencial invalida (401), sin red, timeout, sobrecarga: para esta
-            # capa son el mismo evento -- "el modelo no esta" -- y se tratan
-            # igual. El detalle exacto se conserva en status().
             raise ModelUnavailable(f"{type(exc).__name__}: {exc}") from exc
 
-        return _parse_proposal(response)
+        return _proposal_from_text(_gemini_text(payload))
 
 
-def _parse_proposal(response: Any) -> ModelProposal:
-    """Extrae la propuesta del response. Una respuesta ilegible es una caida."""
-    text = "".join(
-        block.text for block in getattr(response, "content", []) if getattr(block, "type", "") == "text"
-    ).strip()
+def _http_detail(exc: "urllib.error.HTTPError") -> str:
+    """Mensaje del error de la API, recortado. Sin volver a lanzar si el
+    cuerpo no se puede leer -- estamos ya en el camino de fallo."""
+    try:
+        cuerpo = json.loads(exc.read().decode("utf-8"))
+        return str(cuerpo.get("error", {}).get("message", ""))[:200] or exc.reason
+    except Exception:
+        return str(exc.reason)
+
+
+def _gemini_text(payload: dict[str, Any]) -> str:
+    """Texto de la primera candidata. Cadena vacia si la respuesta no tiene
+    la forma esperada -- `_proposal_from_text` la tratara como ilegible, que
+    es el mismo camino que cualquier otra caida."""
+    try:
+        partes = payload["candidates"][0]["content"]["parts"]
+    except (KeyError, IndexError, TypeError):
+        return ""
+    return "".join(str(parte.get("text", "")) for parte in partes).strip()
+
+
+def _proposal_from_text(text: str) -> ModelProposal:
+    """Convierte el texto del modelo en una propuesta.
+
+    Agnostico del proveedor a proposito: recibe una cadena, no un objeto de
+    SDK. Cambiar de API no deberia tocar el parseo, y con esta firma se puede
+    probar sin red ni credencial.
+
+    Una respuesta ilegible es una caida, no una excepcion que suba: el modelo
+    que contesta cualquier cosa es tan inservible como el que no contesta.
+    """
+    text = (text or "").strip()
 
     if text.startswith("```"):
         text = text.strip("`")
@@ -613,7 +673,7 @@ def _clamp_wage(value: float) -> tuple[float, bool]:
 # Instancia compartida del proceso, igual que JOURNAL.
 #
 # Arranca con NullAdvisor: el sistema entero corre sin red y sin key. Para
-# activar tier2 de verdad: STRATEGY.use_advisor(ClaudeAdvisor()) en el arranque.
+# activar tier2 de verdad: STRATEGY.use_advisor(GeminiAdvisor()) en el arranque.
 # ==========================================================================
 
 STRATEGY = StrategyLayer()

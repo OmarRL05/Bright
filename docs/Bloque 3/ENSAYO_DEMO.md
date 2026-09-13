@@ -21,7 +21,7 @@ escenario — que es el punto entero.
 
 ```bash
 cd backend && source .venv/bin/activate
-export ANTHROPIC_API_KEY=...          # imprescindible para la escena E
+export GEMINI_API_KEY=...          # imprescindible para la escena E
 uvicorn main:app --port 8000
 ```
 
@@ -33,7 +33,7 @@ python3 scripts/demo.py --no-interactive # ensayo completo salvo la E
 python3 scripts/demo.py --scene A       # una sola
 ```
 
-**Sin `ANTHROPIC_API_KEY` la escena E no se puede ensayar y el script lo dice.**
+**Sin `GEMINI_API_KEY` la escena E no se puede ensayar y el script lo dice.**
 Es a propósito: sin credencial, `main.py` no conecta tier2, porque "no hay
 modelo configurado" no es lo mismo que "el modelo se cayó" — y arrancar ya
 degradado destruye justo la transición que hay que demostrar.
