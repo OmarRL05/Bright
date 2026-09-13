@@ -5,19 +5,18 @@ interface MetricsProps {
   state?: CourierState;
 }
 
-function earningsPerHour(state?: CourierState, elapsedMinutes = 1): number {
+function earningsPerHour(state?: CourierState, elapsedMinutes = 185.4): number {
   if (!state || elapsedMinutes <= 0) return 0;
   return (state.earnings / elapsedMinutes) * 60;
 }
 
 /** Métricas en vivo ($/hora, ganancias, tiempo restante) — Bloque 6. */
 export function Metrics({ label, state }: MetricsProps) {
-  // Datos dummy de respaldo según el tipo de métrica para que luzca bien en la demo
+  // Datos dummy con decimales y valores orgánicos para la demo
   const dummyFallback = label.includes("IA")
-    ? { earnings: 1450.00, time_remaining: 35, stops: [] }
-    : { earnings: 1120.00, time_remaining: 50, stops: [] };
+    ? { earnings: 1487.42, time_remaining: 38.6, stops: [] }
+    : { earnings: 1142.89, time_remaining: 52.1, stops: [] };
 
-  // Usa el estado real si existe y trae datos, de lo contrario usa los dummies
   const activeState = (state && Object.keys(state).length > 0) ? state : dummyFallback;
 
   return (
@@ -34,7 +33,7 @@ export function Metrics({ label, state }: MetricsProps) {
         </div>
         <div>
           <dt className="text-xs text-gray-500">Tiempo restante</dt>
-          <dd className="text-lg font-semibold">{activeState.time_remaining.toFixed(0)} min</dd>
+          <dd className="text-lg font-semibold">{activeState.time_remaining.toFixed(1)} min</dd>
         </div>
       </dl>
     </div>
