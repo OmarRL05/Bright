@@ -44,7 +44,7 @@ import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Iterator, Protocol
+from typing import Any, Protocol
 
 from core.agent.safety import SafetyVerdict
 
@@ -258,17 +258,6 @@ class DecisionJournal:
         return explain_payload(record) if record else None
 
     # -- salida al event log JSONL (Bloque 1, P1.1) -------------------------
-
-    def decision_events(self) -> Iterator[dict[str, Any]]:
-        """Un evento `decision` por registro, en orden cronologico."""
-        for record in self.all_records():
-            yield to_decision_event(record)
-
-
-# ==========================================================================
-# Renderizado. Funciones libres: se pueden usar sin instanciar el journal, y
-# se testean sin construir uno.
-# ==========================================================================
 
 
 def to_decision_event(record: DecisionRecord) -> dict[str, Any]:

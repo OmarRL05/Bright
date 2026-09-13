@@ -111,6 +111,7 @@ def evaluate_economics(
     profile: VehicleProfile | None = None,
     zone_dropoff: int | None = None,
     reservation_wage_mxn_hr: float | None = None,
+    dropoff_demand_weight: float | None = None,
 ) -> EconomicsResult:
     """Aritmetica de la oferta. Pura: sin I/O y sin reloj.
 
@@ -121,6 +122,13 @@ def evaluate_economics(
     `reservation_wage_mxn_hr` se toma de la capa de estrategia si no se pasa
     explicito -- pasarlo sirve para replay y para los baselines, que deben
     correr contra un umbral fijo y no contra lo que tier2 haya publicado.
+
+    `dropoff_demand_weight` existe por la misma razon: la fila de diagnostico
+    `GreedyRateSafe` necesita correr con peso 0 y antes lo conseguia mutando
+    la constante del modulo con un try/finally. Funcionaba en el arnes
+    monohilo y era una bomba de relojeria en cuanto algo corriera en paralelo:
+    dos politicas a la vez leerian el peso de la otra. Un parametro no tiene
+    ese problema.
     """
     gross_pay_mxn = base_pay_mxn * surge_multiplier + est_tip_mxn
 
@@ -134,9 +142,8 @@ def evaluate_economics(
     )
 
     demand = dropoff_demand_score(zone_dropoff)
-    adjusted_rate_mxn_hr = raw_rate_mxn_hr * (
-        1.0 + DROPOFF_DEMAND_WEIGHT * (demand - NEUTRAL_DEMAND_SCORE)
-    )
+    peso = DROPOFF_DEMAND_WEIGHT if dropoff_demand_weight is None else dropoff_demand_weight
+    adjusted_rate_mxn_hr = raw_rate_mxn_hr * (1.0 + peso * (demand - NEUTRAL_DEMAND_SCORE))
 
     if reservation_wage_mxn_hr is None:
         # Lectura de atributo: sin lock, sin red, sin posibilidad de fallar.

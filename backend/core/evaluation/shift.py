@@ -176,19 +176,6 @@ class ShiftRunner:
     def distance_km(self, from_zone: int, to_zone: int) -> float:
         return self._matrix.travel_distance(self._coord(from_zone), self._coord(to_zone))
 
-    def travel_min(self, from_zone: int, to_zone: int, profile: VehicleProfile) -> float:
-        """Minutos entre dos zonas al perfil del vehiculo.
-
-        Se deriva de la distancia y la velocidad del perfil en vez de usar el
-        tiempo precalculado de la matriz: esa matriz se construyo con la
-        velocidad del proveedor euclidiano por defecto, y aqui la velocidad
-        tiene que ser la del vehiculo del turno -- si no, moto, car y bike
-        tardarian lo mismo.
-        """
-        return self.distance_km(from_zone, to_zone) / profile.avg_speed_kmh * 60.0
-
-    # -- construccion del request ------------------------------------------
-
     def build_request(self, offer: Offer, state: ShiftState, sim_time: datetime) -> DecideRequest:
         """Traduce una oferta del stream al contrato oficial.
 

@@ -135,7 +135,6 @@ def main() -> int:
     print(f"  (reporte, intacto: {list(seed_sets.REPORTING_SEEDS)})")
     print(f"  vehiculo {args.vehicle}, turno {args.shift_hours} h, zona inicial {args.start_zone}")
 
-    import core.agent.economics as eco
     from core.evaluation.policies import GreedyRate, HighestPay, NearestFirst, OurAgent
 
     elegidos: dict[str, float] = {}
@@ -154,26 +153,24 @@ def main() -> int:
         # cruzan el umbral), asi que barrerlos por separado sobre el valor
         # viejo daria un optimo que no existe.
         wage = elegidos["RESERVATION_WAGE (OurAgent)"]
-        anterior = eco.DROPOFF_DEMAND_WEIGHT
 
         def _con_peso(peso: float):
-            eco.DROPOFF_DEMAND_WEIGHT = peso
-            return OurAgent(reservation_wage_mxn_hr=wage)
+            # El peso viaja como parametro de la politica, no mutando la
+            # constante del modulo: un barrido que deja estado global tocado
+            # contamina lo que corra despues, y ya paso.
+            return OurAgent(reservation_wage_mxn_hr=wage, dropoff_demand_weight=peso)
 
-        try:
-            elegidos["DROPOFF_DEMAND_WEIGHT"] = _sweep(
-                # Cota dura: con demanda minima 0.25 en el ZoneMap, un peso de
-                # 2.0 ya multiplica la tasa de la zona mas fria por 0.5, y a
-                # partir de 4.0 la volveria negativa. Se barre hasta 2.0, que
-                # es donde el ajuste deja de ser un matiz y pasa a decidir solo.
-                "OurAgent",
-                "peso_zona",
-                [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0],
-                _con_peso,
-                args,
-            )
-        finally:
-            eco.DROPOFF_DEMAND_WEIGHT = anterior
+        elegidos["DROPOFF_DEMAND_WEIGHT"] = _sweep(
+            # Cota dura: con demanda minima 0.25 en el ZoneMap, un peso de
+            # 2.0 ya multiplica la tasa de la zona mas fria por 0.5, y a
+            # partir de 4.0 la volveria negativa. Se barre hasta 2.0, que
+            # es donde el ajuste deja de ser un matiz y pasa a decidir solo.
+            "OurAgent",
+            "peso_zona",
+            [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0],
+            _con_peso,
+            args,
+        )
 
     if args.only in ("baselines", "all"):
         elegidos["HIGHEST_PAY_MIN_MXN"] = _sweep(

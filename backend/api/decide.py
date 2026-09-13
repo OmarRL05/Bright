@@ -152,6 +152,7 @@ def decide_request(
     request: DecideRequest,
     *,
     reservation_wage_mxn_hr: float | None = None,
+    dropoff_demand_weight: float | None = None,
     record: bool = True,
 ) -> DecideResponse:
     """La decision completa, sincrona y sin transporte.
@@ -232,6 +233,7 @@ def decide_request(
             profile=profile,
             zone_dropoff=request.zone_dropoff,
             reservation_wage_mxn_hr=wage,
+            dropoff_demand_weight=dropoff_demand_weight,
         )
 
         economic_accept = economics.adjusted_rate_mxn_hr >= economics.reservation_wage_mxn_hr

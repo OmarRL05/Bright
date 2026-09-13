@@ -29,15 +29,22 @@ aquí es un TODO de verdad.
 |---|---|---|
 | 1 — Simulador | `core/simulation/engine.py` | ✅ Stream reproducible por seed, 8 tipos de evento oficiales, event log JSONL |
 | 2 — Estado | `core/simulation/state.py` | ✅ Locks, versión optimista, `tick()`, posición interpolada, `validate_windows()` |
-| 3 — Decisión (coordenadas) | `core/agent/decision.py`, `core/routing/greedy.py` | ✅ Cheapest insertion + frozen horizon + umbral $/km |
-| 3 — Decisión (contrato oficial) | `api/decide.py`, `core/agent/safety.py`, `economics.py`, `reasons.py`, `journal.py` | ✅ Fast path completo, 5 constraints, explicabilidad |
+| 3 — Decisión | `api/decide.py`, `core/agent/safety.py`, `economics.py`, `reasons.py`, `journal.py` | ✅ Fast path completo, 5 constraints, explicabilidad. **Es el único camino de decisión** |
 | — Shocks en vivo | `core/agent/shocks.py`, `POST /shock` | ✅ Los 4 tipos, con efecto medible en la decisión siguiente |
 | — Estrategia tier2 | `core/agent/strategy.py` | ✅ `ClaudeAdvisor` + modo degradado + recuperación |
-| — Evaluación | `core/evaluation/`, `scripts/run_evaluation.py` | ✅ 6 políticas, seeds disjuntas, CSV del template |
-| 4 — Optimizador global | `core/optimization/ortools_optimizer.py`, `core/routing/ortools_optimizer.py` | ⚠️ VRPTW funcional, pero **dos rutas de código** con modelos de datos distintos; ninguna conectada al estado real |
-| 5 — Grafo vial | `core/routing/graph.py` | ✅ OSMnx + NetworkX con cierres/tráfico — requiere descargar `monterrey.graphml` (ver `backend/data/README.md`) |
-| 6 — API de simulación | `api/routes.py`, `api/sockets.py` | ❌ `NotImplementedError`: arrancar/pausar el turno y el WebSocket de estado |
-| 6 — Frontend | `frontend/src/` | ❌ Scaffold: `Map.tsx` es un placeholder, el feed no está conectado |
+| — Evaluación | `core/evaluation/`, `scripts/run_evaluation.py`, `scripts/calibrate.py` | ✅ 7 políticas, seeds disjuntas, calibración reproducible, CSV del template |
+| — Replay | `core/evaluation/replay.py`, `scripts/replay.py` | ✅ Graba, reproduce y difea: 201 decisiones sin diferencias, en proceso y por HTTP |
+| — Ensayo de demo | `scripts/demo.py` | ✅ 6 escenas autoverificadas contra el endpoint vivo |
+| 4 — Optimizador global | `core/routing/ortools_optimizer.py` | ⚠️ VRPTW funcional en aislamiento, **sin consumidor**: no está en el camino de decisión. Requiere `ortools`, no instalado |
+| 5 — Grafo vial | `core/routing/graph.py` | ⚠️ OSMnx + NetworkX, **sin consumidor**: las distancias salen de haversine × factor de rodeo. Requiere `osmnx` y `monterrey.graphml`, ninguno presente |
+| 6 — API | `api/decide.py`, `api/replay.py` | ✅ 12 rutas, todas con implementación real. Los stubs que devolvían 500 (`routes.py`, `sockets.py`) se eliminaron |
+| 6 — Frontend | `frontend/src/` | ⚠️ Feed conectado a datos reales con `binding_constraint`; el mapa dibuja línea recta entre zonas — ver `docs/Bloque 3/NOTA_MAPA.md` |
+
+> **Dos módulos sin consumidor, a propósito.** Bloque 4 y 5 (OR-Tools y el
+> grafo vial) están implementados y no los usa nadie: el camino que los jueces
+> prueban mide distancias con haversine × 1.35 entre centroides de zona. Se
+> conservan porque son trabajo real y no crean ambigüedad sobre dónde se
+> decide; el motor de decisión por coordenadas que sí la creaba se eliminó.
 
 ## Quickstart
 

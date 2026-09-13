@@ -222,12 +222,19 @@ class OurAgent:
 
     name = "OurAgent"
 
-    def __init__(self, reservation_wage_mxn_hr: float | None = None) -> None:
+    def __init__(
+        self,
+        reservation_wage_mxn_hr: float | None = None,
+        dropoff_demand_weight: float | None = None,
+    ) -> None:
         self.reservation_wage_mxn_hr = (
             reservation_wage_mxn_hr
             if reservation_wage_mxn_hr is not None
             else DEFAULT_RESERVATION_WAGE_MXN_HR
         )
+        #: None = usar el peso calibrado del modulo. Explicito solo para la
+        #: fila de diagnostico, que corre con 0.
+        self.dropoff_demand_weight = dropoff_demand_weight
 
     def decide(self, request, runner, state, sim_time) -> PolicyDecision:
         """`record=False` porque el arnes corre decenas de miles de decisiones
@@ -238,6 +245,7 @@ class OurAgent:
         response = decide_request(
             request,
             reservation_wage_mxn_hr=self.reservation_wage_mxn_hr,
+            dropoff_demand_weight=self.dropoff_demand_weight,
             record=False,
         )
         return PolicyDecision(
@@ -246,26 +254,25 @@ class OurAgent:
 
 
 class GreedyRateSafe(OurAgent):
-    """Fila de diagnostico: GreedyRate + gate de seguridad, sin valor de zona.
+    """Fila de diagnostico: nuestro agente con el gate de seguridad y SIN el
+    valor de la zona de dropoff.
 
-    No es un baseline del template: es el eslabon que hace legible la tabla.
+    No es un baseline del template: es el eslabon que hace legible el resto.
     Entre `GreedyRate` y esta fila la unica diferencia es la seguridad, y entre
-    esta y `OurAgent` la unica diferencia es el valor de la zona de dropoff. Con
-    las tres juntas, "¿por que ganan menos que el baseline?" se contesta con
-    dos restas en vez de con una explicacion.
+    esta y `OurAgent` la unica diferencia es el posicionamiento. Con las tres
+    juntas, "¿por que ganan lo mismo que un agente que ignora la seguridad?" se
+    contesta con dos restas en vez de con una explicacion.
+
+    El peso cero se pasa como PARAMETRO. La version anterior mutaba
+    `economics.DROPOFF_DEMAND_WEIGHT` dentro de `decide()` con un try/finally:
+    funcionaba en el arnes monohilo y se rompia en cuanto dos politicas
+    corrieran a la vez, porque cada una leeria el peso de la otra.
     """
 
     name = "GreedyRateSafe"
 
-    def decide(self, request, runner, state, sim_time) -> PolicyDecision:
-        import core.agent.economics as eco
-
-        anterior = eco.DROPOFF_DEMAND_WEIGHT
-        eco.DROPOFF_DEMAND_WEIGHT = 0.0
-        try:
-            return super().decide(request, runner, state, sim_time)
-        finally:
-            eco.DROPOFF_DEMAND_WEIGHT = anterior
+    def __init__(self, reservation_wage_mxn_hr: float | None = None) -> None:
+        super().__init__(reservation_wage_mxn_hr, dropoff_demand_weight=0.0)
 
 
 # ==========================================================================

@@ -88,10 +88,6 @@ class EuclideanDistanceProvider:
         self.avg_speed_kmh = avg_speed_kmh
         self.detour_factor = detour_factor
 
-    def straight_line_km(self, origin: tuple[float, float], destination: tuple[float, float]) -> float:
-        """Distancia en linea recta, sin rodeo. Para dibujar, no para decidir."""
-        return _haversine_km(origin, destination)
-
     def travel_distance(self, origin: tuple[float, float], destination: tuple[float, float]) -> float:
         return _haversine_km(origin, destination) * self.detour_factor
 
