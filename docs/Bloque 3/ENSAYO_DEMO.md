@@ -46,7 +46,7 @@ degradado destruye justo la transición que hay que demostrar.
 | 2 | **B** «¿Y si cambio este input?» | constraint 5 (`vehicle_capacity`) en vivo | 60 s |
 | 3 | **C** La frontera de las 22:00 | constraint 1 (`flagged_zone_night`), frontera | 60 s |
 | 4 | **D** Respuesta desde la bitácora | `explain_decision` en <10 s | 30 s |
-| 5 | **F** Entra un surge | shock de media demo | 45 s |
+| 5 | **F** Entra un surge **en vivo** | protocolo §5: shock inyectado | 45 s |
 | 6 | **E** Se cae el modelo | protocolo §7, con la red apagada | 90 s |
 
 **A y B son las dos constraints ensayadas que el protocolo exige.** C es de
@@ -118,17 +118,31 @@ Los números son los **del momento de decidir**, no recalculados: hay un test
 que registra una estimación absurda a propósito y verifica que `explain` la
 devuelva tal cual.
 
-### F — el shock
+### F — el shock, inyectado de verdad
 
 ```
-sin surge   ->  SKIP     binding=reservation_wage   $245/hr
-surge 2.0x  ->  ACCEPT   binding=None               $528/hr
+sin shocks              ->  SKIP     binding=reservation_wage   $236/hr
+POST /shock surge 2.2x  ->  ACCEPT   binding=None               $559/hr
+    Conviene: $559/hr efectivos contra un minimo de $260/hr, y ninguna
+    constraint de seguridad la bloquea. [shock: surge 2.2x zona 3]
 ```
 
-Mismo pedido, misma distancia. El `binding_constraint` pasa de
-`reservation_wage` a `null`: **la máquina distingue un rechazo por dinero de
-uno por seguridad sin leer la prosa**. Y el neto ya descuenta el combustible
-de los 11.5 km.
+**No se toca el pedido**: el surge entra por `POST /shock`, y el body es el
+mismo objeto que el evento `shock` del event log — una línea copiada de un log
+entra tal cual. Es literalmente lo que el protocolo dice que los jueces pueden
+hacer (§5), así que se les puede ofrecer el teclado.
+
+El `binding_constraint` pasa de `reservation_wage` a `null`: **la máquina
+distingue un rechazo por dinero de uno por seguridad sin leer la prosa**.
+
+Los otros tres tipos también mueven números, sobre el mismo pedido:
+
+| shock | efecto medido |
+|---|---|
+| ninguno | 21.60 min · 9.0 km |
+| `rain` | 28.80 min · 9.0 km (baja la velocidad) |
+| `closure` | 29.16 min · 12.2 km (obliga a rodear) |
+| `delay` dirigido | 35.40 min — y otro pedido en el mismo instante sigue en 21.60 |
 
 ### E — se cae el modelo
 

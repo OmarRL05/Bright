@@ -57,6 +57,43 @@ VERDE, ROJO, GRIS, NEGRITA, FIN = "\033[32m", "\033[31m", "\033[90m", "\033[1m",
 # ==========================================================================
 
 
+def post_json(path: str, payload: dict | None, base_url: str, method: str = "POST") -> dict:
+    request = urllib.request.Request(
+        f"{base_url}{path}",
+        data=json.dumps(payload).encode() if payload is not None else None,
+        headers={"Content-Type": "application/json"},
+        method=method,
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.loads(response.read().decode())
+
+
+def limpiar_shocks(base_url: str) -> None:
+    """Deja el registro de shocks vacio. Una escena que empieza con shocks de
+    una corrida anterior no demuestra lo que dice demostrar."""
+    post_json("/shocks", None, base_url, method="DELETE")
+
+
+def inyectar_surge(zona: int, multiplicador: float, sim_time: str):
+    def accion(base_url: str) -> None:
+        limpiar_shocks(base_url)
+        post_json(
+            "/shock",
+            {
+                "event": "shock",
+                "sim_time": sim_time,
+                "shock_type": "surge",
+                "zone": zona,
+                "multiplier": multiplicador,
+                "duration_min": 30,
+            },
+            base_url,
+        )
+        print(f"  {GRIS}POST /shock  surge {multiplicador}x en zona {zona}{FIN}")
+
+    return accion
+
+
 def post_decide(payload: dict, base_url: str) -> dict:
     request = urllib.request.Request(
         f"{base_url}/decide",
@@ -119,6 +156,10 @@ class Paso:
     espera_binding: str | None
     #: Lo que el presentador dice mientras sale en pantalla.
     guion: str = ""
+    #: Accion que se ejecuta ANTES del ping (inyectar un shock, limpiarlos).
+    #: Recibe la base_url. Es lo que permite que una escena demuestre un
+    #: efecto externo real en vez de simularlo cambiando el payload.
+    antes: Callable[[str], None] | None = None
 
 
 @dataclass
@@ -375,50 +416,51 @@ def _escena_e(base_url: str) -> bool:
 
 
 def _escena_f() -> Escena:
-    """Un surge cambia la decision. Es el shock que el brief exige."""
-    flojo = offer(
+    """Un surge inyectado EN VIVO cambia la decision. El shock que el brief exige."""
+    pedido = offer(
         order_id="ORD-DEMO-F1",
-        base_pay_mxn=130.0,
+        zone_dropoff=3,
+        base_pay_mxn=110.0,
         est_tip_mxn=0.0,
         surge_multiplier=1.0,
-        distance_pickup_km=4.5,
-        distance_delivery_km=7.0,
+        distance_pickup_km=3.0,
+        distance_delivery_km=6.0,
+        restaurant_prep_min=6,
         courier_state_overrides={"shift_end_time": "2026-03-21T23:00:00"},
     )
-    con_surge = offer(
-        order_id="ORD-DEMO-F2",
-        base_pay_mxn=130.0,
-        est_tip_mxn=0.0,
-        surge_multiplier=2.0,
-        distance_pickup_km=4.5,
-        distance_delivery_km=7.0,
-        courier_state_overrides={"shift_end_time": "2026-03-21T23:00:00"},
-    )
+    con_shock = dict(pedido, order_id="ORD-DEMO-F2")
+
     return Escena(
         clave="F",
-        titulo="Un surge entra en la zona — el shock de media demo",
-        demuestra="reacción a shock sin frenar el loop; criterio de paga (reservation_wage)",
-        pregunta="«¿Qué haría si ahora mismo entra un surge?»",
+        titulo="Entra un surge en vivo — el shock de media demo",
+        demuestra="protocolo seccion 5: shock inyectado por el juez, con efecto medible",
+        pregunta="«¿Que haria si ahora mismo entra un surge?»",
         pasos=[
             Paso(
-                "Pedido largo y flojo: 11.5 km por $130",
-                flojo,
+                "El pedido, sin shocks activos",
+                pedido,
                 "SKIP",
                 "reservation_wage",
-                guion="Once kilómetros y medio por ciento treinta pesos. No sale.",
+                guion="Nueve kilometros por ciento diez pesos. Hoy no sale.",
+                antes=limpiar_shocks,
             ),
             Paso(
-                "Entra surge 2.0x en la zona: el MISMO pedido",
-                con_surge,
+                "Se inyecta el surge por POST /shock. MISMO pedido.",
+                con_shock,
                 "ACCEPT",
                 None,
-                guion="Entra el surge. Mismo pedido, misma distancia. Ahora sí sale.",
+                guion=(
+                    "No toco el pedido. Mando un shock al endpoint, igual que lo "
+                    "mandarian ustedes, con el mismo formato del evento del log."
+                ),
+                antes=inyectar_surge(zona=3, multiplicador=2.2, sim_time="2026-03-21T18:55:00"),
             ),
         ],
         cierre=(
-            "El binding_constraint pasa de 'reservation_wage' a null: la máquina distingue "
-            "un rechazo por dinero de uno por seguridad sin leer la prosa. "
-            "Y fíjense en la aritmética: el neto ya descuenta el combustible de los 11.5 km."
+            "El body del shock es el mismo objeto que el evento `shock` del event log: "
+            "una linea copiada de un log entra tal cual. El reason lo anota entre corchetes, "
+            "y el binding_constraint pasa de 'reservation_wage' a null -- la maquina distingue "
+            "un rechazo por dinero de uno por seguridad sin leer la prosa."
         ),
     )
 
@@ -450,6 +492,8 @@ def _correr_escena(escena: Escena, base_url: str) -> bool:
         print(f"\n  {NEGRITA}{paso.titulo}{FIN}")
         if paso.guion:
             print(f'  {GRIS}"{paso.guion}"{FIN}')
+        if paso.antes is not None:
+            paso.antes(base_url)
 
         respuesta = post_decide(paso.payload, base_url)
         decision = respuesta["decision"]
