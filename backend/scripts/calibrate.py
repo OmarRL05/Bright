@@ -97,6 +97,18 @@ def _sweep(nombre: str, parametro: str, candidatos, make_policy, args) -> float:
     print(f"  ELEGIDO            : {parametro}={elegido:g}  (${elegido_score:.1f}, peor vecino ${robustez:.1f})")
     if elegido != pico_valor:
         print("    (no es el pico: se prefiere el punto que sobrevive a que el turno salga distinto)")
+
+    # Un optimo en el EXTREMO de la rejilla casi nunca es un optimo: significa
+    # que la rejilla se quedo corta y el verdadero esta mas alla, o que el
+    # borde gano por ruido y no tiene vecino que lo desmienta. Avisarlo es lo
+    # que separa una calibracion de un numero elegido a ciegas.
+    extremos = (candidatos[0], candidatos[-1])
+    if elegido in extremos and len(candidatos) > 2:
+        print(
+            f"    AVISO: {parametro}={elegido:g} cae en el extremo de la rejilla "
+            f"[{candidatos[0]:g}, {candidatos[-1]:g}]."
+        )
+        print("           Amplia el rango antes de creerte este valor.")
     return elegido
 
 
@@ -150,7 +162,15 @@ def main() -> int:
 
         try:
             elegidos["DROPOFF_DEMAND_WEIGHT"] = _sweep(
-                "OurAgent", "peso_zona", [0.0, 0.2, 0.4, 0.6, 0.8, 1.0], _con_peso, args
+                # Cota dura: con demanda minima 0.25 en el ZoneMap, un peso de
+                # 2.0 ya multiplica la tasa de la zona mas fria por 0.5, y a
+                # partir de 4.0 la volveria negativa. Se barre hasta 2.0, que
+                # es donde el ajuste deja de ser un matiz y pasa a decidir solo.
+                "OurAgent",
+                "peso_zona",
+                [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0],
+                _con_peso,
+                args,
             )
         finally:
             eco.DROPOFF_DEMAND_WEIGHT = anterior

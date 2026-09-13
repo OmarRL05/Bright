@@ -101,6 +101,13 @@ class StatusResponse(BaseModel):
     last_model_error: str | None
     advisor: str
     decisions_recorded: int
+    # Como se miden las distancias. Lo publica el sistema para que un mapa
+    # pueda etiquetar su linea con la verdad en vez de con una cadena escrita
+    # a mano que envejece en silencio: hoy NO hay geometria de ruta, solo una
+    # estimacion entre centroides de zona.
+    distance_model: str
+    road_detour_factor: float
+    route_geometry_available: bool
 
 
 class ShockRequest(BaseModel):

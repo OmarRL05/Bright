@@ -49,14 +49,22 @@ from core.models import DEFAULT_ZONE_MAP, VehicleProfile
 #: significado pudiendo desincronizarse.
 RESERVATION_WAGE_MXN_HR = strategy_layer.DEFAULT_RESERVATION_WAGE_MXN_HR
 
-#: Cuanto pesa la zona de dropoff en la tasa ajustada. Con 0.6, terminar en
-#: Centro (demand_score 0.9) vale +24% y terminar en Apodaca (0.3) vale -12%.
+#: Cuanto pesa la zona de dropoff en la tasa ajustada. Con 1.25, terminar en
+#: Centro (demand_score 0.9) vale +50% y terminar en Parque Industrial (0.25)
+#: vale -31%.
 #:
-#: Calibrado sobre TUNING_SEEDS (ver docs/Bloque 3/RESULTADOS.md): aporta
-#: +6.1% de ganancias medias. Se eligio 0.6 y no el maximo de la rejilla (0.4)
-#: porque con 12 turnos la diferencia entre los dos esta dentro del ruido y 0.6
-#: es el punto cuyo PEOR vecino en la rejilla es mas alto.
-DROPOFF_DEMAND_WEIGHT = 0.6
+#: Subio de 0.6 a 1.25 al aplicar el factor de rodeo a las distancias, y el
+#: salto tiene sentido: con trayectos realistas (un 35% mas largos), acabar el
+#: turno en una zona fria cuesta de verdad -- el siguiente pedido nace lejos y
+#: ahora ese "lejos" se paga en combustible y en minutos. Donde te deja el
+#: pedido dejo de ser un matiz y paso a ser un factor de primer orden.
+#:
+#: Calibrado con `scripts/calibrate.py` sobre TUNING_SEEDS. El barrido
+#: anterior llegaba solo hasta 1.0 y el optimo caia en el borde -- sintoma
+#: clasico de rejilla corta. Ampliada hasta 2.0 aparecio un optimo interior
+#: con caida clara despues; la herramienta ahora avisa cuando un elegido cae
+#: en un extremo.
+DROPOFF_DEMAND_WEIGHT = 1.25
 
 #: demand_score que se considera "ni caliente ni fria" (sin bonus ni castigo).
 NEUTRAL_DEMAND_SCORE = 0.5

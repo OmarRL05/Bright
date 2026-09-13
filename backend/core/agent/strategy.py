@@ -101,7 +101,11 @@ from core.agent import reasons
 #: El valor sale de `scripts/calibrate.py`, que hace el barrido de forma
 #: reproducible y aplica el criterio del peor vecino en vez del pico -- no de
 #: una corrida a mano que nadie pueda repetir.
-DEFAULT_RESERVATION_WAGE_MXN_HR = 275.0
+#:
+#: Bajo de 275 a 250 al aplicar el factor de rodeo a las distancias: con
+#: trayectos un 35% mas largos, la misma oferta rinde menos MXN/hr y el umbral
+#: que maximiza el turno baja con ella.
+DEFAULT_RESERVATION_WAGE_MXN_HR = 250.0
 
 MIN_RESERVATION_WAGE_MXN_HR = 60.0
 MAX_RESERVATION_WAGE_MXN_HR = 600.0

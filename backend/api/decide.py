@@ -74,6 +74,7 @@ from core.agent.journal import (
 from core.agent.safety import SafetyVerdict, combine, evaluate_safety_full, profile_for
 from core.agent.shocks import SHOCKS, ShockEffects, shock_from_payload
 from core.agent.strategy import STRATEGY
+from core.routing.euclidean import ROAD_DETOUR_FACTOR
 
 router = APIRouter(tags=["decide"])
 
@@ -497,6 +498,14 @@ async def status() -> StatusResponse:
         last_model_error=health.last_error,
         advisor=health.advisor,
         decisions_recorded=len(JOURNAL),
+        distance_model=(
+            f"haversine entre centroides de zona x {ROAD_DETOUR_FACTOR} "
+            "(factor de rodeo); sin grafo vial"
+        ),
+        road_detour_factor=ROAD_DETOUR_FACTOR,
+        # Cuando esto sea True habra una polilinea que dibujar. Hoy el sistema
+        # sabe CUANTO se recorre, no POR DONDE.
+        route_geometry_available=False,
     )
 
 

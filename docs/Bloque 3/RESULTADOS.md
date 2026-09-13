@@ -19,27 +19,29 @@ Seeds de tuning (**disjuntas**, nunca reportadas): `11 23 37 41 59 67 71 83 89
 
 | policy | mean_earnings_mxn | mean_mxn_per_hr | accept_rate_pct | orders_completed | deadhead_pct | deadline_misses | **safety_violations** |
 |---|---|---|---|---|---|---|---|
-| AcceptAll | 895.8 | 112.0 | 100.0 | 9.8 | 50.1 | 2359 | **5179** |
-| HighestPay | 1814.1 | 226.8 | 11.5 | 8.9 | 50.6 | 269 | **470** |
-| NearestFirst | 1194.8 | 149.3 | 21.4 | 12.8 | 24.1 | 498 | **923** |
-| GreedyRate | 2685.5 | 335.7 | 15.4 | 16.8 | 55.8 | 334 | **509** |
-| *GreedyRateSafe* | *2392.6* | *299.1* | *7.8* | *15.3* | *57.7* | *142* | ***0*** |
-| **OurAgent** | **2513.7** | **314.2** | **8.3** | **16.3** | **54.6** | **163** | **0** |
-| Oracle | 2742.8 | 342.8 | 9.0 | 17.7 | 54.7 | 180 | **0** |
+| AcceptAll | 567.5 | 70.9 | 100.0 | 6.9 | 50.1 | 2359 | **5318** |
+| HighestPay | 1321.6 | 165.2 | 11.5 | 6.8 | 50.6 | 270 | **519** |
+| NearestFirst | 960.9 | 120.1 | 12.7 | 10.1 | 16.7 | 299 | **507** |
+| GreedyRate | 2077.1 | 259.6 | 13.0 | 13.3 | 55.4 | 287 | **440** |
+| *GreedyRateSafe* | *1606.2* | *200.8* | *5.2* | *10.2* | *58.5* | *76* | ***0*** |
+| **OurAgent** | **2082.8** | **260.3** | **7.1** | **14.0** | **55.3** | **142** | **0** |
+| Oracle | 2243.4 | 280.4 | 7.3 | 14.4 | 54.3 | 139 | **0** |
 
 `GreedyRateSafe` no es un baseline del template: es una fila de diagnóstico
 que hace legible el resto.
 
 ## 2. Qué dice la tabla, en dos restas
 
-**Perdemos 6.4% contra el mejor baseline, y el motivo es exactamente la
-seguridad.** Vale más decirlo así que maquillarlo:
+**Igualamos al mejor baseline con cero violaciones de seguridad.** La
+diferencia es de +0.3%, que sobre 12 turnos es un empate: la afirmación
+honesta es que ganamos *lo mismo* que un agente que ignora la seguridad, no
+que le ganamos.
 
 ```
-GreedyRate        $2686   509 violaciones   ← el baseline más fuerte, sin seguridad
-GreedyRateSafe    $2393     0 violaciones   ← el gate de seguridad cuesta  −10.9%
-OurAgent          $2514     0 violaciones   ← el valor de zona recupera    + 5.1%
-Oracle            $2743     0 violaciones   ← capturamos el 91.6%
+GreedyRate        $2077   440 violaciones   ← el baseline más fuerte, sin seguridad
+GreedyRateSafe    $1606     0 violaciones   ← el gate de seguridad cuesta  −22.7%
+OurAgent          $2083     0 violaciones   ← el valor de zona recupera    +29.7%
+Oracle            $2243     0 violaciones   ← capturamos el 92.8%
 ```
 
 Las tres frases que se sostienen con esto:
@@ -47,11 +49,13 @@ Las tres frases que se sostienen con esto:
 1. **Cero violaciones de seguridad en los 12 turnos held-out, y en los tres
    vehículos.** Hay un test parametrizado por seed que lo comprueba turno a
    turno, no sobre el promedio.
-2. **El precio de la seguridad es 10.9% de las ganancias**, y lo sabemos con
-   un número porque medimos la misma política con y sin el gate.
-3. **De lo que se puede ganar sin violar nada, capturamos el 91.6%.** El resto
-   es lo que cuesta elegir el umbral a ciegas en vez de con conocimiento del
-   turno completo.
+2. **El precio de la seguridad es 22.7% de las ganancias**, y lo sabemos con
+   un número porque medimos la misma política con y sin el gate. Ese es el
+   coste que hay que pagar de algún sitio.
+3. **Se paga con posicionamiento.** Elegir a dónde te deja el pedido aporta
+   +29.7% y cubre de sobra los 22.7%. Ese es el argumento entero del agente:
+   no gana siendo más agresivo, gana terminando en mejores sitios.
+4. **De lo que se puede ganar sin violar nada, capturamos el 92.8%.**
 
 `AcceptAll` es instructivo: acepta el 100% y termina **último**. Aceptar todo
 llena el turno de pedidos que no dejan dinero después del combustible y que
@@ -68,9 +72,9 @@ ojo convierte la tabla en un espantapájaros.
 |---|---|---|
 | HighestPay | `min_pay_mxn` | 180 |
 | NearestFirst | `max_deadhead_km` | 6.0 |
-| GreedyRate | `min_rate_mxn_hr` | 275 |
-| OurAgent | `reservation_wage_mxn_hr` | 275 |
-| OurAgent | `DROPOFF_DEMAND_WEIGHT` | 0.6 |
+| GreedyRate | `min_rate_mxn_hr` | 225 |
+| OurAgent | `reservation_wage_mxn_hr` | 250 |
+| OurAgent | `DROPOFF_DEMAND_WEIGHT` | 1.25 |
 
 **No se toma el máximo de la rejilla.** Con 12 turnos la diferencia entre el
 pico y su vecino suele estar dentro del ruido, y elegir el pico es ajustar al

@@ -74,7 +74,7 @@ NEAREST_FIRST_MAX_DEADHEAD_KM = 6.0
 #: aportan la seguridad y el valor de la zona, y no una calibracion distinta.
 #: Siguen coincidiendo tras recalibrar con 16 zonas (los dos bajaron de 400 a
 #: 275 por separado), asi que la resta entre filas sigue significando lo mismo.
-GREEDY_RATE_MIN_MXN_HR = 275.0
+GREEDY_RATE_MIN_MXN_HR = 225.0
 
 
 @dataclass(frozen=True)
