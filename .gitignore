@@ -32,3 +32,4 @@ backend/data/*.csv
 *.swp
 backend/.venv/
 backend/out/
+backend/logs/
