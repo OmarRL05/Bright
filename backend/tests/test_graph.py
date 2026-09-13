@@ -1,7 +1,13 @@
 import os
 
-import networkx as nx
 import pytest
+
+# Bloque 4/5 dependen de paquetes pesados (osmnx/ortools) que no siempre estan
+# instalados. Sin esto, su ausencia aborta la RECOLECCION de todo el suite y
+# ningun test corre -- no solo estos dos archivos.
+nx = pytest.importorskip("networkx")
+pytest.importorskip("osmnx")
+pytest.importorskip("ortools")
 
 from core.models import RoadEvent
 from core.routing.graph import RoadNetwork

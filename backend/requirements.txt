@@ -15,3 +15,6 @@ numpy==2.2.1
 # Dev / testing
 pytest==8.3.4
 httpx==0.28.1
+
+# Capa de estrategia (tier2, fuera de la ventana de decision)
+anthropic>=1.0
