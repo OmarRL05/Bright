@@ -71,8 +71,35 @@ def make_manager(
 # ===========================================================================
 
 class TestZoneMap:
-    def test_default_zone_map_has_four_zones(self):
-        assert len(DEFAULT_ZONE_MAP.zones) == 4
+    def test_default_zone_map_has_sixteen_zones(self):
+        """Ampliado de 4 a 16 (ver core.models.ZoneMap docstring): los
+        ejemplos ilustrativos del material oficial usan zone_pickup/
+        zone_dropoff hasta 11 -- con solo 4 zonas (0-3), esos ids caian
+        fuera de nuestro propio universo de zonas."""
+        assert len(DEFAULT_ZONE_MAP.zones) == 16
+
+    def test_zone_ids_from_official_examples_are_known(self):
+        """decision_response_schema.json / event_log_schema.json usan estos
+        ids en sus ejemplos ilustrativos (5, 7, 11)."""
+        for zone_id in (5, 7, 11):
+            assert DEFAULT_ZONE_MAP.by_id(zone_id) is not None
+
+    def test_by_id_or_none_returns_none_for_unknown_zone(self):
+        """Un juez puede mandar cualquier entero de zona -- no debe lanzar."""
+        assert DEFAULT_ZONE_MAP.by_id_or_none(9999) is None
+
+    def test_by_id_or_none_returns_zone_when_known(self):
+        zone = DEFAULT_ZONE_MAP.by_id_or_none(2)
+        assert zone is not None
+        assert zone.name == "Centro"
+
+    def test_by_id_raises_on_unknown_zone(self):
+        with pytest.raises(KeyError):
+            DEFAULT_ZONE_MAP.by_id(9999)
+
+    def test_zone_ids_are_unique(self):
+        ids = [z.zone_id for z in DEFAULT_ZONE_MAP.zones]
+        assert len(ids) == len(set(ids))
 
     def test_nearest_zone_returns_exact_match(self):
         tec_coord = (25.651, -100.289)
@@ -495,6 +522,104 @@ class TestEventLog:
             capture_output=True, text=True,
         )
         assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ===========================================================================
+# Shocks con efecto economico — un surge debe subir el pago de las ofertas
+# siguientes en su zona, no solo aparecer en el log sin consecuencia.
+# ===========================================================================
+
+class _FixedRng:
+    """RNG de mentira: siempre la misma zona y el mismo pago base, para
+    aislar el efecto del surge del resto de la aleatoriedad."""
+
+    def __init__(self, zone):
+        self._zone = zone
+
+    def choice(self, seq):
+        # Solo suplanta la eleccion de ZONA. `_generate_offer` tambien usa
+        # choice() para la plataforma ("rappi"/"didi"/"uber"), y devolver un
+        # Zone ahi hacia que el evento del log no fuera serializable a JSON.
+        if seq and isinstance(seq[0], Zone):
+            return self._zone
+        return seq[0]
+
+    def choices(self, seq, weights=None, k=1):
+        # El generador reparte las ofertas ponderadas por demand_score, asi que
+        # llama a choices() y no a choice(). Un doble al que le falta un metodo
+        # de la interfaz real no aisla nada: revienta.
+        return [self._zone] * k
+
+    def randint(self, a, b):
+        return 100
+
+    def uniform(self, a, b):
+        return 1.5
+
+    def random(self):
+        # 0.5 queda por ENCIMA de SURGE_ORDER_RATE (0.25): sin esto el surge
+        # ambiental se dispara siempre y contamina justo lo que estos tests
+        # quieren aislar, que es el efecto del shock por zona.
+        return 0.5
+
+
+class TestShockEconomics:
+    def test_surge_increases_offer_pay_in_same_zone(self):
+        engine = SimulationEngine(seed=1, shift_duration=1.0)
+        zone = DEFAULT_ZONE_MAP.zones[0]
+        engine._rng = _FixedRng(zone)
+
+        baseline = engine._generate_offer()
+        assert baseline.pay == 100.0
+        assert baseline.surge_multiplier == 1.0
+
+        engine._active_surges[zone.zone_id] = (1.5, engine.current_time + 10.0)
+        surged = engine._generate_offer()
+
+        # La tarifa base NO se premultiplica: `order_offered` lleva
+        # `base_pay_mxn` y `surge_multiplier` como campos separados, y
+        # `evaluate_economics` los multiplica una sola vez. Premultiplicar aqui
+        # Y llevar el multiplicador contaria el surge dos veces.
+        assert surged.pay == 100.0
+        assert surged.surge_multiplier == pytest.approx(1.5)
+        assert surged.pay * surged.surge_multiplier == pytest.approx(150.0)
+
+    def test_surge_does_not_affect_other_zones(self):
+        engine = SimulationEngine(seed=1, shift_duration=1.0)
+        zone = DEFAULT_ZONE_MAP.zones[0]
+        other_zone = DEFAULT_ZONE_MAP.zones[1]
+        engine._active_surges[other_zone.zone_id] = (1.5, engine.current_time + 10.0)
+
+        engine._rng = _FixedRng(zone)
+        offer = engine._generate_offer()
+        assert offer.pay == 100.0
+        assert offer.surge_multiplier == 1.0
+        assert engine._active_surge_multiplier(zone.zone_id) == 1.0
+
+    def test_surge_expires_after_its_duration(self):
+        engine = SimulationEngine(seed=1, shift_duration=1.0)
+        zone = DEFAULT_ZONE_MAP.zones[0]
+        engine._active_surges[zone.zone_id] = (1.5, expires_at := 5.0)
+
+        engine.current_time = expires_at - 1  # todavia vigente
+        assert engine._active_surge_multiplier(zone.zone_id) == 1.5
+
+        engine.current_time = expires_at  # ya expiro
+        assert engine._active_surge_multiplier(zone.zone_id) == 1.0
+
+    def test_order_offered_log_reflects_active_surge(self):
+        log_buf = io.StringIO()
+        engine = SimulationEngine(seed=1, shift_duration=1.0, log_file=log_buf)
+        zone = DEFAULT_ZONE_MAP.zones[0]
+        engine._rng = _FixedRng(zone)
+        engine._active_surges[zone.zone_id] = (1.5, engine.current_time + 10.0)
+
+        offer = engine._generate_offer()
+        engine._log_order_offered(offer)
+
+        obj = json.loads(log_buf.getvalue().strip())
+        assert obj["surge_multiplier"] == 1.5
+        assert obj["base_pay_mxn"] == pytest.approx(100.0)  # sin premultiplicar
 
 
 # ===========================================================================

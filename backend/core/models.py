@@ -139,13 +139,33 @@ class ZoneMap:
     student-materials/courier/decision_response_schema.json) — es el puente
     entre lo que un juez manda por HTTP a POST /decide y las coordenadas que
     usa el motor VRPTW interno (Bloque 3/4/5).
+
+    16 zonas (0-15), no 4: los ejemplos ilustrativos del material oficial
+    usan zone_pickup/zone_dropoff hasta 11 (ver
+    decision_response_schema.json, event_log_schema.json). Con solo 4 zonas
+    (0-3), cualquier id oficial >=4 caia fuera de nuestro propio universo de
+    zonas -- no rompia nada (`by_id_or_none` existe para eso, ver abajo),
+    pero reducia el area donde `flagged_zone_night` podia dispararse a una
+    sola zona conocida.
     """
 
     _DEFAULT_ZONES: list[Zone] = [
-        Zone(0, "Tec",       (25.651, -100.289), demand_score=0.7),
-        Zone(1, "San Pedro", (25.657, -100.402), demand_score=0.5),
-        Zone(2, "Centro",    (25.680, -100.310), demand_score=0.9),
-        Zone(3, "Apodaca",   (25.780, -100.180), demand_score=0.3),
+        Zone(0,  "Tec",               (25.651, -100.289), demand_score=0.70),
+        Zone(1,  "San Pedro",         (25.657, -100.402), demand_score=0.50),
+        Zone(2,  "Centro",            (25.680, -100.310), demand_score=0.90),
+        Zone(3,  "Apodaca",           (25.780, -100.180), demand_score=0.30),
+        Zone(4,  "Guadalupe",         (25.677, -100.256), demand_score=0.60),
+        Zone(5,  "San Nicolas",       (25.750, -100.281), demand_score=0.55),
+        Zone(6,  "Santa Catarina",    (25.673, -100.458), demand_score=0.40),
+        Zone(7,  "Escobedo",          (25.796, -100.318), demand_score=0.35),
+        Zone(8,  "Cumbres",           (25.716, -100.371), demand_score=0.45),
+        Zone(9,  "Contry",            (25.630, -100.267), demand_score=0.50),
+        Zone(10, "Del Valle",         (25.649, -100.357), demand_score=0.65),
+        Zone(11, "Parque Industrial", (25.740, -100.220), demand_score=0.25),
+        Zone(12, "Mitras",            (25.681, -100.345), demand_score=0.50),
+        Zone(13, "Obispado",          (25.674, -100.336), demand_score=0.55),
+        Zone(14, "Valle Oriente",     (25.646, -100.360), demand_score=0.70),
+        Zone(15, "Linda Vista",       (25.712, -100.253), demand_score=0.40),
     ]
 
     def __init__(self, zones: list[Zone] | None = None) -> None:
@@ -174,6 +194,21 @@ class ZoneMap:
             if z.zone_id == zone_id:
                 return z
         raise KeyError(f"zone_id {zone_id} no encontrado en ZoneMap")
+
+    def by_id_or_none(self, zone_id: int) -> Zone | None:
+        """Como `by_id`, pero None en vez de excepcion.
+
+        Un judge puede mandar cualquier entero de zona a POST /decide —
+        nuestro universo de zonas es nuestro (el reto dice "you build your
+        own data"), pero no podemos asumir que siempre coincide. Quien
+        consuma esto decide el fallback (demanda neutral, `zone_known:
+        false` en el log, etc.) en vez de que ZoneMap decida por todos con
+        una excepcion.
+        """
+        for z in self._zones:
+            if z.zone_id == zone_id:
+                return z
+        return None
 
 
 def _sq_dist(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -303,6 +338,7 @@ class RoadEvent:
     location: tuple[float, float] | list[tuple[float, float]]
     multiplier: float | None
     timestamp: float
+    duration_min: float = 30.0
 
 
 @dataclass

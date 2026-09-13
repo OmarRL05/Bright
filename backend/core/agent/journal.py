@@ -345,9 +345,35 @@ def _inputs(record: DecisionRecord) -> dict[str, Any]:
     weight, volume = in_flight_totals(in_flight)
     continuous = float(_get(overrides, "continuous_riding_min", 0.0) or 0.0)
 
+    from core.agent.economics import dropoff_demand_score
+
+    zone_pickup = _get(order, "zone_pickup")
+    zone_dropoff = _get(order, "zone_dropoff")
+
     return {
         "sim_time": _iso(sim_time),
-        "position_zone": _get(overrides, "current_zone", _get(order, "zone_pickup")),
+        "position_zone": _get(overrides, "current_zone", zone_pickup),
+        # Un juez puede mandar cualquier entero de zona: "you build your own
+        # data" no significa que conozcamos su universo de zonas. Cuando no la
+        # conocemos, la demanda se asume neutral -- y eso queda escrito aqui en
+        # vez de ser un supuesto invisible dentro de la aritmetica.
+        #
+        # Las tres banderas, y no una: `zone_known` a secas es ambiguo (¿la de
+        # recogida o la de entrega?) y esa ambiguedad ya costo un test. Aqui
+        # `zone_known` significa "conocemos LAS DOS"; las otras dos dicen cual
+        # falla. La demanda se toma de la zona de DROPOFF, que es la que
+        # importa para "donde te deja el pedido".
+        "zone_known": (
+            safety.zone_is_known(zone_pickup) and safety.zone_is_known(zone_dropoff)
+        ),
+        "zone_pickup_known": safety.zone_is_known(zone_pickup),
+        "zone_dropoff_known": safety.zone_is_known(zone_dropoff),
+        # Dos scores con nombre, no un `demand_score` a secas: la economia usa
+        # el de DROPOFF (donde te deja el pedido, que es la categoria de sondeo
+        # "Dropoff location value"), y el de pickup se publica porque es el que
+        # explica de donde salio la oferta. Confundirlos cambia el numero.
+        "dropoff_demand_score": dropoff_demand_score(zone_dropoff),
+        "pickup_demand_score": dropoff_demand_score(zone_pickup),
         "vehicle": _get(order, "vehicle"),
         "vehicle_profile": {
             "avg_speed_kmh": profile.avg_speed_kmh,

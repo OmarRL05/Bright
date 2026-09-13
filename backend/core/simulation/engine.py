@@ -41,6 +41,16 @@ Consecuencias concretas de ese fix:
 - `position_update`, `earnings_update` y `strategy_update` siguen sin
   productor: le corresponden a CourierStateManager/DecisionEngine (P0.1/
   Bloque 3), no a este generador de stream. No se inventaron aqui.
+
+Corregido tras revision de Persona 1 (13 sep): un `shock` de tipo `surge` no
+tenia ningun efecto -- se emitia el evento y ahi quedaba, sin que las
+ofertas siguientes de esa zona reflejaran el multiplicador. El brief exige
+al menos un shock en vivo durante la demo; sin efecto economico visible, el
+shock no demuestra nada. Ahora `_active_surges` trackea, por zona, el
+multiplicador vigente y su expiracion (`SURGE_DURATION_MIN`); tanto
+`Offer.pay` (efecto real, lo que ve el motor de decision) como el
+`surge_multiplier` logueado en `order_offered` (antes fijo en 1.0) usan el
+surge activo de la zona de pickup si lo hay.
 """
 
 from __future__ import annotations
@@ -70,6 +80,12 @@ from core.routing.euclidean import EuclideanDistanceProvider
 # punto de partida para producir timestamps ISO legibles; el offset en
 # minutos (self.current_time) sigue siendo la fuente de verdad interna.
 DEFAULT_SHIFT_START_TIME = datetime(2026, 1, 1, 8, 0, 0)
+
+# Cuanto dura el efecto de un surge sobre las ofertas de su zona antes de
+# expirar. La RoadEvent que lo origina no trae duracion propia (solo
+# type/location/multiplier/timestamp); placeholder a calibrar como el resto
+# de constantes de umbral del equipo.
+SURGE_DURATION_MIN = 30.0
 
 
 class SimulationEngine:
@@ -118,6 +134,9 @@ class SimulationEngine:
         self.current_time = 0.0
         self.offer_counter = 0
 
+        # zone_id -> (multiplier, minuto en que expira). Ver SURGE_DURATION_MIN.
+        self._active_surges: dict[int, tuple[float, float]] = {}
+
         # Campos extra del evento `shift_end`. Quien corre el turno los va
         # llenando (ganancias, entregas, violaciones); el generador no los
         # conoce. Como `event_stream` es perezoso y `shift_end` se escribe al
@@ -131,6 +150,17 @@ class SimulationEngine:
     def _iso(self, minute_offset: float) -> str:
         """`sim_time` ISO 8601 para un offset en minutos desde el inicio del turno."""
         return (self.shift_start_time + timedelta(minutes=minute_offset)).isoformat()
+
+    def _active_surge_multiplier(self, zone_id: int) -> float:
+        """Multiplicador de surge vigente para `zone_id`, o 1.0 si no hay ninguno activo."""
+        surge = self._active_surges.get(zone_id)
+        if surge is None:
+            return 1.0
+        multiplier, expires_at = surge
+        if self.current_time >= expires_at:
+            del self._active_surges[zone_id]
+            return 1.0
+        return multiplier
 
     # ------------------------------------------------------------------
     # Generadores de eventos individuales
@@ -172,6 +202,12 @@ class SimulationEngine:
         pickup_zone = self._rng.choices(self.zone_map.zones, weights=pesos, k=1)[0]
         dropoff_zone = self._rng.choices(self.zone_map.zones, weights=pesos, k=1)[0]
 
+        # La tarifa base va SIN surge: `order_offered` lleva `base_pay_mxn` y
+        # `surge_multiplier` como campos separados, no premultiplicados. La
+        # version anterior multiplicaba aqui y volvia a dividir al loguear
+        # para recuperar la base -- un viaje de ida y vuelta que se evita
+        # llevando los dos numeros desde el principio.
+        surge_de_zona = self._active_surge_multiplier(pickup_zone.zone_id)
         pay = float(self._rng.randint(40, 150))
 
         # Ventana de tiempo: el repartidor tiene entre 20 y 40 min para entregar.
@@ -188,10 +224,18 @@ class SimulationEngine:
 
         volume_liters = round(weight_kg * self._rng.uniform(*self.LITERS_PER_KG), 1)
 
-        if self._rng.random() < self.SURGE_ORDER_RATE:
-            surge_multiplier = round(self._rng.uniform(1.1, 2.2), 1)
-        else:
-            surge_multiplier = 1.0
+        # El sorteo se hace SIEMPRE, haya shock o no: si solo se tirara el dado
+        # en una de las ramas, el stream de una misma seed dejaria de ser
+        # reproducible en cuanto cambiara el momento de un shock.
+        surge_ambiente = (
+            round(self._rng.uniform(1.1, 2.2), 1)
+            if self._rng.random() < self.SURGE_ORDER_RATE
+            else 1.0
+        )
+        # Un shock de surge en la zona manda sobre el surge ambiental: es lo
+        # que hace que inyectar un shock en vivo cambie decisiones de verdad y
+        # no solo emita una linea en el log.
+        surge_multiplier = max(surge_de_zona, surge_ambiente)
 
         # La propina escala con la tarifa, no con el surge: es lo que deja el
         # cliente, no lo que pone la plataforma (ver core/agent/economics.py).
@@ -234,6 +278,9 @@ class SimulationEngine:
         if event_type == "surge":
             # Factor de surge entre 1.2x y 2.0x
             multiplier = round(self._rng.uniform(1.2, 2.0), 1)
+            # Efecto real sobre las ofertas de esta zona durante
+            # SURGE_DURATION_MIN -- ver _active_surge_multiplier.
+            self._active_surges[zone.zone_id] = (multiplier, self.current_time + SURGE_DURATION_MIN)
         elif event_type == "traffic":
             # Factor de tráfico entre 1.1x y 1.8x (ralentiza, no cierra)
             multiplier = round(self._rng.uniform(1.1, 1.8), 1)
@@ -250,7 +297,53 @@ class SimulationEngine:
             location=location,
             multiplier=multiplier,
             timestamp=self.current_time,
+            duration_min=SURGE_DURATION_MIN,
         )
+
+    def inject_shock(
+        self,
+        shock_type: str,
+        zone_id: int | None = None,
+        multiplier: float | None = None,
+        duration_min: float = SURGE_DURATION_MIN,
+        location: tuple[float, float] | list[tuple[float, float]] | None = None,
+    ) -> RoadEvent:
+        """Inyecta un shock en vivo durante la simulación (requisito demo).
+
+        - Si shock_type == 'surge': activa el surge_multiplier en la zona
+          por `duration_min` minutos, incrementando las ofertas subsecuentes.
+        - Emite el evento oficial 'shock' al log JSONL si está configurado.
+        """
+        if zone_id is not None:
+            zone = self.zone_map.by_id(zone_id)
+            loc = location if location is not None else zone.coord
+        elif location is not None:
+            zone = self.zone_map.nearest_zone(location[0] if isinstance(location, list) else location)
+            loc = location
+        else:
+            zone = self.zone_map.zones[0]
+            loc = zone.coord
+
+        if shock_type == "surge":
+            mult = multiplier if multiplier is not None else 1.6
+            self._active_surges[zone.zone_id] = (mult, self.current_time + duration_min)
+            road_type = "surge"
+        elif shock_type in ("closure", "traffic"):
+            mult = multiplier
+            road_type = shock_type
+        else:
+            mult = multiplier
+            road_type = "traffic"
+
+        event = RoadEvent(
+            type=road_type,
+            location=loc,
+            multiplier=mult,
+            timestamp=self.current_time,
+            duration_min=duration_min,
+        )
+        self._log_shock(event)
+        return event
 
     # ------------------------------------------------------------------
     # P1.1 — Event log JSONL (contrato oficial)
@@ -336,11 +429,15 @@ class SimulationEngine:
         location = event.location[0] if isinstance(event.location, list) else event.location
         zone = self.zone_map.nearest_zone(location)
         shock_type = "surge" if event.type == "surge" else ("closure" if event.type == "closure" else "delay")
-        self._log(EventType.SHOCK, self.current_time, {
+        payload = {
             "shock_type": shock_type,
             "zone": zone.zone_id,
-            **({"multiplier": event.multiplier} if event.multiplier is not None else {}),
-        })
+        }
+        if event.multiplier is not None:
+            payload["multiplier"] = event.multiplier
+        if getattr(event, "duration_min", None) is not None:
+            payload["duration_min"] = event.duration_min
+        self._log(EventType.SHOCK, self.current_time, payload)
 
     def log_offer_decision(
         self,

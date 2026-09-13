@@ -36,6 +36,12 @@ usa `distance_pickup_km`/`distance_delivery_km` tal como llegan en el
 request en vez de resolver `zone_pickup`/`zone_dropoff` a coordenadas, para
 no depender de que un juez use las mismas zonas que nuestro simulador
 interno genera (ver docs/03_Integracion_API_Decide.md).
+
+La UNICA resolucion de zona que si se hace aqui es `_zone_demand()`: busca
+`zone_pickup` en `DEFAULT_ZONE_MAP` (16 zonas) para ajustar el salario de
+reserva por demanda -- si el juez manda una zona que no conocemos, cae a
+demanda neutral (`zone_known: false` queda explicito en explain_decision,
+no falla callado).
 """
 
 import time
