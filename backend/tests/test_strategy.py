@@ -408,27 +408,47 @@ def test_lecturas_concurrentes_nunca_ven_parametros_a_medias():
         while not parar.is_set():
             params = layer.snapshot()
             vistos.append((params.reservation_wage_mxn_hr, params.source))
+            time.sleep(0)  # cede el turno: sin esto un lector acapara el GIL
 
     lectores = [threading.Thread(target=leer, daemon=True) for _ in range(4)]
     for h in lectores:
         h.start()
 
-    for i in range(20):
-        layer.use_advisor(FakeAdvisor(ModelProposal(reservation_wage_mxn_hr=100.0 + i)))
+    # Dentro de la banda relativa a proposito: si se recortaran, el test no
+    # estaria comprobando la atomicidad de la publicacion sino el recorte, y
+    # ademas solo fallaria cuando algun lector llegara a ver una publicacion
+    # -- que es como paso desapercibido hasta ahora.
+    publicados = [
+        st.DEFAULT_RESERVATION_WAGE_MXN_HR * (0.80 + i * 0.02) for i in range(20)
+    ]
+    for i, wage in enumerate(publicados):
+        layer.use_advisor(FakeAdvisor(ModelProposal(reservation_wage_mxn_hr=wage)))
         layer.refresh_now(T0 + timedelta(minutes=i), CONTEXT)
+        # Sin esta pausa, `refresh_now` es tan rapido que el planificador puede
+        # no darle turno a ningun lector entre publicaciones: el test pasaba
+        # sin haber leido nada concurrente ni una vez.
+        time.sleep(0.002)
 
     parar.set()
     for h in lectores:
         h.join(timeout=2)
 
-    validos = {("bootstrap", st.DEFAULT_RESERVATION_WAGE_MXN_HR)}
+    esperados = {round(w, 6) for w in publicados}
+    vistos_modelo = 0
     for wage, source in vistos:
         assert source in ("bootstrap", "model")
         if source == "bootstrap":
             assert wage == st.DEFAULT_RESERVATION_WAGE_MXN_HR
         else:
-            assert 100.0 <= wage <= 119.0
-    assert validos  # el turno corrio
+            # Cada lectura tiene que ser un valor PUBLICADO, no una mezcla.
+            assert round(wage, 6) in esperados, f"lectura a medias: {wage}"
+            vistos_modelo += 1
+
+    assert vistos, "los lectores no leyeron nada: el test no probo nada"
+    assert vistos_modelo > 0, (
+        "ningun lector alcanzo a ver una publicacion del modelo; sin eso este "
+        "test pasa por suerte y no comprueba la atomicidad"
+    )
 
 
 # ==========================================================================
