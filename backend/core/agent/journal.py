@@ -359,6 +359,13 @@ def _inputs(record: DecisionRecord) -> dict[str, Any]:
         "offer": {
             "zone_pickup": _get(order, "zone_pickup"),
             "zone_dropoff": _get(order, "zone_dropoff"),
+            # Un juez puede mandar cualquier entero de zona: el reto dice "you
+            # build your own data", pero no que su universo de zonas sea el
+            # nuestro. Decir cual reconocimos y cual no evita que una zona
+            # desconocida se vea igual que una conocida y neutral -- que es la
+            # diferencia entre degradar con criterio y fallar en silencio.
+            "zone_pickup_known": safety.zone_is_known(_get(order, "zone_pickup")),
+            "zone_dropoff_known": safety.zone_is_known(_get(order, "zone_dropoff")),
             "distance_pickup_km": _get(order, "distance_pickup_km"),
             "distance_delivery_km": _get(order, "distance_delivery_km"),
             "base_pay_mxn": _get(order, "base_pay_mxn"),

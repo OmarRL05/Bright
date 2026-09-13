@@ -52,10 +52,11 @@ RESERVATION_WAGE_MXN_HR = strategy_layer.DEFAULT_RESERVATION_WAGE_MXN_HR
 #: Cuanto pesa la zona de dropoff en la tasa ajustada. Con 0.6, terminar en
 #: Centro (demand_score 0.9) vale +24% y terminar en Apodaca (0.3) vale -12%.
 #:
-#: Calibrado sobre TUNING_SEEDS (ver docs/Bloque 3/RESULTADOS.md): aporta
-#: +6.1% de ganancias medias. Se eligio 0.6 y no el maximo de la rejilla (0.4)
-#: porque con 12 turnos la diferencia entre los dos esta dentro del ruido y 0.6
-#: es el punto cuyo PEOR vecino en la rejilla es mas alto.
+#: Calibrado sobre TUNING_SEEDS con `scripts/calibrate.py` (ver
+#: docs/Bloque 3/RESULTADOS.md). Con 0.6 es a la vez el pico de la rejilla y
+#: el punto cuyo PEOR vecino es mas alto, asi que no hay que elegir entre las
+#: dos cosas. Sobrevivio sin cambios a la ampliacion del ZoneMap a 16 zonas,
+#: que si movio todos los demas umbrales.
 DROPOFF_DEMAND_WEIGHT = 0.6
 
 #: demand_score que se considera "ni caliente ni fria" (sin bonus ni castigo).

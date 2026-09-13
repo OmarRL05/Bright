@@ -71,6 +71,13 @@ from core.routing.euclidean import EuclideanDistanceProvider
 # minutos (self.current_time) sigue siendo la fuente de verdad interna.
 DEFAULT_SHIFT_START_TIME = datetime(2026, 1, 1, 8, 0, 0)
 
+# Cuanto dura el efecto de un surge sobre las ofertas de su zona. El RoadEvent
+# que lo origina no traia duracion propia (solo type/location/multiplier/
+# timestamp); se le agrego `duration_min` a RoadEvent para que el evento diga
+# cuanto dura en vez de que el consumidor lo adivine. Placeholder a calibrar,
+# igual que el resto de constantes de umbral del equipo.
+SURGE_DURATION_MIN = 30.0
+
 
 class SimulationEngine:
 
@@ -118,6 +125,12 @@ class SimulationEngine:
         self.current_time = 0.0
         self.offer_counter = 0
 
+        # zone_id -> (multiplicador, minuto de turno en que expira).
+        # Es lo que hace que un `shock` de surge tenga consecuencia economica
+        # en vez de ser una linea en el log: las ofertas que nacen en esa zona
+        # mientras el surge dura salen con el multiplicador puesto.
+        self._active_surges: dict[int, tuple[float, float]] = {}
+
         # Campos extra del evento `shift_end`. Quien corre el turno los va
         # llenando (ganancias, entregas, violaciones); el generador no los
         # conoce. Como `event_stream` es perezoso y `shift_end` se escribe al
@@ -131,6 +144,24 @@ class SimulationEngine:
     def _iso(self, minute_offset: float) -> str:
         """`sim_time` ISO 8601 para un offset en minutos desde el inicio del turno."""
         return (self.shift_start_time + timedelta(minutes=minute_offset)).isoformat()
+
+    def _active_surge_multiplier(self, zone_id: int) -> float:
+        """Multiplicador de surge vigente en `zone_id`, o 1.0 si no hay.
+
+        Expira por tiempo de SIMULACION, no de reloj de pared: un turno
+        reproducido a otra velocidad ve exactamente los mismos surges durante
+        exactamente los mismos minutos. La entrada caducada se borra al
+        consultarla -- no hay barrido periodico que pudiera correr en un orden
+        distinto entre corridas.
+        """
+        surge = self._active_surges.get(zone_id)
+        if surge is None:
+            return 1.0
+        multiplier, expires_at = surge
+        if self.current_time >= expires_at:
+            del self._active_surges[zone_id]
+            return 1.0
+        return multiplier
 
     # ------------------------------------------------------------------
     # Generadores de eventos individuales
@@ -193,6 +224,25 @@ class SimulationEngine:
         else:
             surge_multiplier = 1.0
 
+        # Un surge activo en la zona de pickup sube el multiplicador de esta
+        # oferta. Dos decisiones que importan y que conviene poder defender:
+        #
+        # 1. **Se aplica a `surge_multiplier`, no a `pay`.** Toda la economia
+        #    aguas abajo calcula `base_pay * surge + propina` (ver
+        #    core/agent/economics.py y ShiftRunner.accept); multiplicar
+        #    tambien la tarifa base contaria el surge DOS VECES y el evento
+        #    `order_offered` quedaria mintiendo, porque el contrato oficial
+        #    pide `base_pay_mxn` y `surge_multiplier` por separado, no
+        #    premultiplicados.
+        # 2. **Se toma el mayor, no se apila.** El surge de la zona y el que
+        #    la oferta trae de suyo son la misma senal (lo que la plataforma
+        #    paga de mas ahora mismo) por dos vias; multiplicarlos daria 2.2 x
+        #    2.0 = 4.4x, que no es un turno, es un premio.
+        #
+        # Va DESPUES de la extraccion del RNG a proposito: el orden de las
+        # extracciones es parte del contrato de determinismo del stream.
+        surge_multiplier = max(surge_multiplier, self._active_surge_multiplier(pickup_zone.zone_id))
+
         # La propina escala con la tarifa, no con el surge: es lo que deja el
         # cliente, no lo que pone la plataforma (ver core/agent/economics.py).
         if self._rng.random() < self.NO_TIP_RATE:
@@ -234,6 +284,13 @@ class SimulationEngine:
         if event_type == "surge":
             # Factor de surge entre 1.2x y 2.0x
             multiplier = round(self._rng.uniform(1.2, 2.0), 1)
+            # Y aqui es donde deja de ser decorativo: queda vigente sobre la
+            # zona, asi que las ofertas que nazcan ahi durante los proximos
+            # SURGE_DURATION_MIN minutos salen con el multiplicador puesto.
+            self._active_surges[zone.zone_id] = (
+                multiplier,
+                self.current_time + SURGE_DURATION_MIN,
+            )
         elif event_type == "traffic":
             # Factor de tráfico entre 1.1x y 1.8x (ralentiza, no cierra)
             multiplier = round(self._rng.uniform(1.1, 1.8), 1)
@@ -250,7 +307,75 @@ class SimulationEngine:
             location=location,
             multiplier=multiplier,
             timestamp=self.current_time,
+            duration_min=SURGE_DURATION_MIN,
         )
+
+    def inject_shock(
+        self,
+        shock_type: str,
+        zone_id: int | None = None,
+        multiplier: float | None = None,
+        duration_min: float = SURGE_DURATION_MIN,
+        location: tuple[float, float] | list[tuple[float, float]] | None = None,
+    ) -> RoadEvent:
+        """Inyecta un shock a media corrida, desde fuera del generador.
+
+            "At least one shock during the demo is required by the brief.
+             Judges may inject shocks live."
+            -- evaluation_protocol.md, seccion 5
+
+        Es la contraparte *dentro de la simulacion* de `POST /shock`: aquel
+        cambia lo que `/decide` responde a un ping suelto; este cambia el
+        STREAM, o sea las ofertas que el turno genera a partir de ahora. Los
+        dos hacen falta porque los jueces pueden hacer las dos cosas -- pinchar
+        el endpoint, o pedir ver un turno corriendo cuando cae un surge.
+
+        Un `surge` queda vigente sobre la zona por `duration_min` minutos de
+        simulacion. `closure` y `traffic` se registran y se emiten al log, pero
+        todavia no alteran la geometria del turno: el generador no resuelve
+        rutas, solo elige zonas. Decirlo aqui es mejor que dar a entender que
+        el efecto existe.
+
+        El evento se escribe al log JSONL con el formato oficial, asi que un
+        turno con shocks inyectados se puede reproducir despues.
+        """
+        if zone_id is not None:
+            zone = self.zone_map.by_id(zone_id)
+            resolved_location = location if location is not None else zone.coord
+        elif location is not None:
+            first = location[0] if isinstance(location, list) else location
+            zone = self.zone_map.nearest_zone(first)
+            resolved_location = location
+        else:
+            zone = self.zone_map.zones[0]
+            resolved_location = zone.coord
+
+        if shock_type == "surge":
+            effective = multiplier if multiplier is not None else 1.6
+            self._active_surges[zone.zone_id] = (
+                effective,
+                self.current_time + duration_min,
+            )
+            event_type = "surge"
+        elif shock_type == "closure":
+            effective = multiplier
+            event_type = "closure"
+        else:
+            # `rain` y `delay` del contrato oficial no tienen equivalente en
+            # RoadEvent (que solo conoce closure/traffic/surge). Se mapean a
+            # `traffic`, que es lo mas cercano: algo que estorba sin cerrar.
+            effective = multiplier
+            event_type = "traffic"
+
+        event = RoadEvent(
+            type=event_type,
+            location=resolved_location,
+            multiplier=effective,
+            timestamp=self.current_time,
+            duration_min=duration_min,
+        )
+        self._log_shock(event)
+        return event
 
     # ------------------------------------------------------------------
     # P1.1 — Event log JSONL (contrato oficial)
@@ -340,6 +465,10 @@ class SimulationEngine:
             "shock_type": shock_type,
             "zone": zone.zone_id,
             **({"multiplier": event.multiplier} if event.multiplier is not None else {}),
+            # `duration_min` es opcional en el schema pero aqui siempre se
+            # emite: sin el, quien reproduce el log no sabe cuando dejo de
+            # aplicar el surge y el replay diverge de la corrida original.
+            "duration_min": event.duration_min,
         })
 
     def log_offer_decision(

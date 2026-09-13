@@ -64,7 +64,8 @@ entero inventado. **Si cambias el orden o el número de `_DEFAULT_ZONES`,
 llegan en el request (así lo pide el contrato oficial) + velocidad plana del
 `VehicleProfile` — no resuelve `zone_pickup`/`zone_dropoff` a coordenadas.
 Es deliberado: un juez puede mandar cualquier entero de zona, no
-necesariamente el mismo universo de 4 zonas que genera tu simulador interno.
+necesariamente el mismo universo de zonas que genera tu simulador interno
+(hoy 16, ver seccion 4).
 Si más adelante quieren que el loop real de un turno complete alimente
 `/decide` con las zonas que tu `SimulationEngine` genera, ese es el punto
 para engancharlo, pero no es necesario para pasar `validate_format.py`.
@@ -99,8 +100,9 @@ no una corrección de nombres):
   conoce la posición real del courier, solo genera el stream). Cuando exista
   un loop que una `SimulationEngine` con `CourierStateManager`, ese es el
   punto para calcular el deadhead real.
-- `surge_multiplier` queda fijo en `1.0` — no se propaga un surge activo de
-  un `shock` anterior a las `order_offered` posteriores en la misma zona.
+- ~~`surge_multiplier` queda fijo en `1.0`~~ — **resuelto en la sección 4**: un
+  `shock` de surge ahora queda vigente sobre su zona y las `order_offered`
+  posteriores de esa zona salen con el multiplicador puesto.
 - `log_stop_completed`/`log_route_optimized` se eliminaron (sin equivalente
   oficial, nada en producción los llamaba). Si Bloque 4 necesita loguear una
   ruta reoptimizada, no hay evento oficial para eso — no inventarlo, dejarlo
@@ -171,10 +173,76 @@ directamente — si los cambias, actualiza ambos:
 | Símbolo | Archivo |
 |---|---|
 | `VEHICLE_PROFILES`, `VehicleProfile`, `VehicleType` | `core/models.py` (Abraham, P0.5) |
-| `DEFAULT_ZONE_MAP`, `ZoneMap`, `Zone.zone_id` | `core/models.py` (Abraham, P0.2) |
+| `DEFAULT_ZONE_MAP`, `ZoneMap`, `Zone.zone_id`, `ZoneMap.by_id_or_none` | `core/models.py` (Abraham, P0.2) |
 | `evaluate_safety`, `SafetyViolation` | `core/agent/safety.py` |
 | Los 6 strings de `binding_constraint` (5 safety + `reservation_wage`) | `core/agent/safety.py` + `core/agent/economics.py` |
-| `evaluate_economics`, `EconomicsResult`, `RESERVATION_WAGE_MXN_HR` | `core/agent/economics.py` |
+| `evaluate_economics`, `EconomicsResult`, `DROPOFF_DEMAND_WEIGHT` | `core/agent/economics.py` |
+
+## 4. Actualización 13 sep — 3 fixes de Persona 1 (simulación)
+
+> Escrito por Persona 1 y **reconciliado al integrarlo**: su rama `B5` partía
+> de una base anterior a `integra/b3-b5`, y el merge quedó subido con
+> marcadores de conflicto sin resolver (`api/decide.py`, `economics.py`,
+> `safety.py`, `engine.py` no compilaban). Lo que sigue describe lo que
+> realmente quedó en el código, no la versión de esa rama.
+
+**ZoneMap ampliado de 4 a 16 zonas** (`core/models.py`). Los ejemplos
+ilustrativos del material oficial usan `zone_pickup`/`zone_dropoff` hasta 11
+(`decision_response_schema.json`); con sólo 0–3, cualquier id oficial ≥4 caía
+fuera de nuestro universo de zonas. Consecuencias:
+
+- `ZoneMap.by_id_or_none(zone_id) -> Zone | None` (nuevo) — no lanza para un
+  id desconocido, a diferencia de `by_id`. Quien lo consuma decide el fallback
+  en vez de que `ZoneMap` decida por todos con una excepción.
+- `explain_decision.inputs.offer` reporta `zone_pickup_known` y
+  `zone_dropoff_known` por separado. Antes ese dato sólo existía dentro del
+  `detail` de una violación de zona marcada, así que una zona **desconocida**
+  —que no produce violación— se veía igual que una conocida y neutral.
+- **Zonas marcadas: de una a tres** (Centro=2, Parque Industrial=11, Linda
+  Vista=15). Con sólo Centro sobre 16 zonas, `flagged_zone_night` casi nunca
+  podía dispararse contra los ids de los ejemplos oficiales: un juez mandaba
+  `zone_dropoff: 11` a las 23:00 y aceptábamos. Verificado que ahora rechaza.
+- **Toda la calibración se rehízo** (`scripts/calibrate.py`, sólo sobre
+  `TUNING_SEEDS`). El mapa nuevo es más disperso y los cinco umbrales quedaron
+  mal afinados; ver `docs/Bloque 3/RESULTADOS.md` §3.
+
+**Lo que NO se adoptó de esa rama, y por qué.** Traía un ajuste del salario de
+reserva por demanda de la zona de **pickup**
+(`BASE_RESERVATION_WAGE_MXN_HR * (1 - demand_score * DEMAND_DISCOUNT)`) y un
+renombre de `RESERVATION_WAGE_MXN_HR`. Se descartó: `main` ya ajusta por
+demanda, pero sobre la zona de **dropoff** y sobre la tasa
+(`DROPOFF_DEMAND_WEIGHT`), que es lo que responde a la categoría de sondeo
+*Dropoff location value* —"where the courier ends up next"— y que está
+calibrado y medido. El salario de reserva, además, ya no es una constante: lo
+publica la capa de estrategia (tier2). Mantener las dos versiones habría dado
+dos ajustes de demanda compitiendo sobre el mismo número.
+
+**Shocks con efecto económico real** (`core/simulation/engine.py`). Un `surge`
+se emitía al log y ahí quedaba. Ahora `SimulationEngine._active_surges` guarda
+el multiplicador vigente por zona (`SURGE_DURATION_MIN` = 30 min de
+simulación) y lo aplica a las ofertas que nacen ahí mientras dura.
+`SimulationEngine.inject_shock(...)` permite inyectarlo a media corrida y lo
+escribe al log con el formato oficial.
+
+Dos correcciones sobre la versión original, las dos con consecuencia medible:
+
+1. **El surge va en `surge_multiplier`, no en `Offer.pay`.** Toda la economía
+   aguas abajo calcula `base_pay * surge + propina`; multiplicar también la
+   tarifa base contaba el surge **dos veces** e inflaba el turno entero.
+   Además el contrato oficial pide los dos campos por separado, no
+   premultiplicados, así que el log habría estado mintiendo.
+2. **El surge de zona y el que la oferta trae de suyo no se apilan: se toma el
+   mayor.** Son la misma señal por dos vías; multiplicarlos daba hasta 4.4x.
+
+`closure` y tráfico se registran pero **no** alargan trayectos: el generador
+elige zonas, no resuelve rutas. Está escrito como limitación en RESULTADOS §7.
+
+**Hallazgo 1 de `greedy.py` — corregido.** `cheapest_insertion` sólo validaba
+la ventana de tiempo de la oferta NUEVA; nunca revisaba si el corrimiento en
+cadena de ETAs sacaba a una parada YA ACEPTADA de su propia ventana.
+`_downstream_still_feasible` (nuevo) descarta toda posición candidata que
+rompería la ventana de una parada posterior. Sólo revisa el límite superior:
+una inserción nunca puede adelantar un ETA, la distancia extra es siempre ≥ 0.
 
 Cualquier duda, correr esto siempre debe seguir en verde:
 

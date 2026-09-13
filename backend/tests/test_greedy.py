@@ -89,3 +89,47 @@ def test_infeasible_when_no_position_fits_time_window():
 
     assert result.feasible is False
     assert result.new_route is None
+
+
+def test_rejects_cheapest_position_that_breaks_a_downstream_window():
+    """Regresion del Hallazgo 1 (auditoria del 12 sep): insertar B en la
+    posicion mas barata (en medio de la ruta de A) atrasa el dropoff de A
+    mas alla de SU ventana. `cheapest_insertion` debia validar solo la
+    ventana de la oferta nueva y aceptaba esta posicion con `feasible=True`
+    de todos modos -- ahora debe descartarla y usar la siguiente mas barata
+    que si respeta a A.
+
+    Geometria elegida a proposito: insertar B entre el pickup y el dropoff
+    de A cuesta ~0.008 min de desvio (va casi en linea recta); insertarla
+    despues del dropoff de A cuesta ~4.45 min. Sin el fix, la posicion barata
+    gana aunque atrase a A por encima de su ventana; con el fix, se descarta
+    y gana la posicion cara pero factible.
+    """
+    b_detour_point = (25.6685, -100.3025)  # casi sobre la linea TEC->CENTRO
+
+    dropoff_eta_a = PROVIDER.travel_time(TEC, CENTRO)
+    # Ventana de A mas ajustada que el desvio que provocaria B en medio
+    # (~0.008 min) pero suficiente para no tocarla si B se inserta al final.
+    a = make_offer("A", TEC, CENTRO, received_at=0.0, window=(0.0, dropoff_eta_a + 0.005))
+    route = [
+        RouteStop(offer_id="A", kind="pickup", eta=0.0),
+        RouteStop(offer_id="A", kind="dropoff", eta=dropoff_eta_a),
+    ]
+    accepted = {"A": a}
+
+    b = make_offer("B", b_detour_point, b_detour_point, received_at=0.0, window=(0.0, 1000.0))
+
+    result = cheapest_insertion(
+        route, b, frozen_index=1, accepted_offers=accepted, distance_provider=PROVIDER
+    )
+
+    assert result.feasible
+    stops = [(s.offer_id, s.kind) for s in result.new_route]
+    # B debe quedar DESPUES del dropoff de A, no en medio (la posicion barata
+    # que rompia la ventana de A).
+    assert stops == [("A", "pickup"), ("A", "dropoff"), ("B", "pickup"), ("B", "dropoff")]
+
+    a_dropoff_stop = result.new_route[1]
+    assert a_dropoff_stop.eta <= a.time_window[1]
+    # Verifica que efectivamente no se movio del ETA original -- B no la toco.
+    assert a_dropoff_stop.eta == pytest.approx(dropoff_eta_a)

@@ -71,8 +71,35 @@ def make_manager(
 # ===========================================================================
 
 class TestZoneMap:
-    def test_default_zone_map_has_four_zones(self):
-        assert len(DEFAULT_ZONE_MAP.zones) == 4
+    def test_default_zone_map_has_sixteen_zones(self):
+        """Ampliado de 4 a 16 (ver core.models.ZoneMap docstring): los
+        ejemplos ilustrativos del material oficial usan zone_pickup/
+        zone_dropoff hasta 11 -- con solo 4 zonas (0-3), esos ids caian
+        fuera de nuestro propio universo de zonas."""
+        assert len(DEFAULT_ZONE_MAP.zones) == 16
+
+    def test_zone_ids_from_official_examples_are_known(self):
+        """decision_response_schema.json / event_log_schema.json usan estos
+        ids en sus ejemplos ilustrativos (5, 7, 11)."""
+        for zone_id in (5, 7, 11):
+            assert DEFAULT_ZONE_MAP.by_id(zone_id) is not None
+
+    def test_by_id_or_none_returns_none_for_unknown_zone(self):
+        """Un juez puede mandar cualquier entero de zona -- no debe lanzar."""
+        assert DEFAULT_ZONE_MAP.by_id_or_none(9999) is None
+
+    def test_by_id_or_none_returns_zone_when_known(self):
+        zone = DEFAULT_ZONE_MAP.by_id_or_none(2)
+        assert zone is not None
+        assert zone.name == "Centro"
+
+    def test_by_id_raises_on_unknown_zone(self):
+        with pytest.raises(KeyError):
+            DEFAULT_ZONE_MAP.by_id(9999)
+
+    def test_zone_ids_are_unique(self):
+        ids = [z.zone_id for z in DEFAULT_ZONE_MAP.zones]
+        assert len(ids) == len(set(ids))
 
     def test_nearest_zone_returns_exact_match(self):
         tec_coord = (25.651, -100.289)
@@ -495,6 +522,101 @@ class TestEventLog:
             capture_output=True, text=True,
         )
         assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ===========================================================================
+# Shocks con efecto economico — un surge debe subir el pago de las ofertas
+# siguientes en su zona, no solo aparecer en el log sin consecuencia.
+# ===========================================================================
+
+def _offer_with_surges(seed: int, surges: dict[int, tuple[float, float]] | None = None):
+    """Primera oferta de un turno con `seed`, opcionalmente bajo surge.
+
+    Comparar contra una corrida de CONTROL con la misma seed es lo que hace
+    estos tests robustos: el RNG real produce la misma secuencia en las dos,
+    asi que cualquier diferencia entre las dos ofertas viene del surge y de
+    nada mas. La alternativa -- un RNG de mentira que devuelva valores fijos --
+    tiene que replicar a mano el orden exacto de extracciones del generador, y
+    se rompe en silencio en cuanto alguien agrega un campo.
+    """
+    engine = SimulationEngine(seed=seed, shift_duration=60.0)
+    if surges:
+        engine._active_surges.update(surges)
+    return engine, engine._generate_offer()
+
+
+class TestShockEconomics:
+    """Un `shock` de surge tiene que mover dinero, no solo escribir una linea.
+
+    El brief exige al menos un shock en vivo durante la demo; si el evento se
+    emite y las ofertas siguientes salen igual, no hay nada que enseñar.
+    """
+
+    def test_surge_sube_el_multiplicador_de_su_zona(self):
+        control_engine, control = _offer_with_surges(seed=1)
+        zona = control.zone_pickup
+
+        _, surgida = _offer_with_surges(seed=1, surges={zona: (2.2, 30.0)})
+
+        assert surgida.zone_pickup == zona          # misma secuencia de RNG
+        assert surgida.surge_multiplier == 2.2
+        assert surgida.surge_multiplier > control.surge_multiplier
+
+    def test_el_surge_no_se_cuenta_dos_veces(self):
+        """La tarifa base NO cambia: el surge vive en `surge_multiplier`.
+
+        Toda la economia aguas abajo calcula `base_pay * surge + propina`. Si
+        el generador multiplicara tambien `pay`, el surge entraria dos veces y
+        el evento `order_offered` mentiria -- el contrato oficial pide los dos
+        campos por separado, no premultiplicados.
+        """
+        _, control = _offer_with_surges(seed=1)
+        _, surgida = _offer_with_surges(seed=1, surges={control.zone_pickup: (2.2, 30.0)})
+
+        assert surgida.pay == control.pay
+
+    def test_surge_no_toca_otras_zonas(self):
+        _, control = _offer_with_surges(seed=1)
+        otra = next(z.zone_id for z in DEFAULT_ZONE_MAP.zones if z.zone_id != control.zone_pickup)
+
+        _, ajena = _offer_with_surges(seed=1, surges={otra: (2.2, 30.0)})
+
+        assert ajena.surge_multiplier == control.surge_multiplier
+        assert ajena.pay == control.pay
+
+    def test_surge_de_zona_y_de_oferta_no_se_apilan(self):
+        """Son la misma senal por dos vias. Multiplicarlas daria 2.2 x 2.0 =
+        4.4x, que no es un turno sino un premio: se toma el mayor."""
+        _, control = _offer_with_surges(seed=1)
+        _, surgida = _offer_with_surges(seed=1, surges={control.zone_pickup: (1.5, 30.0)})
+
+        assert surgida.surge_multiplier == max(control.surge_multiplier, 1.5)
+
+    def test_surge_expira_por_tiempo_de_simulacion(self):
+        engine = SimulationEngine(seed=1, shift_duration=60.0)
+        zona = DEFAULT_ZONE_MAP.zones[0]
+        engine._active_surges[zona.zone_id] = (1.5, 5.0)
+
+        engine.current_time = 4.0
+        assert engine._active_surge_multiplier(zona.zone_id) == 1.5
+
+        engine.current_time = 5.0      # ventana semiabierta: a los 5 ya no
+        assert engine._active_surge_multiplier(zona.zone_id) == 1.0
+        # Y la entrada caducada se borra al consultarla, sin barrido aparte.
+        assert zona.zone_id not in engine._active_surges
+
+    def test_el_log_separa_tarifa_y_multiplicador(self):
+        log_buf = io.StringIO()
+        engine = SimulationEngine(seed=1, shift_duration=60.0, log_file=log_buf)
+        control = SimulationEngine(seed=1, shift_duration=60.0)._generate_offer()
+        engine._active_surges[control.zone_pickup] = (1.5, 30.0)
+
+        offer = engine._generate_offer()
+        engine._log_order_offered(offer)
+
+        obj = json.loads(log_buf.getvalue().strip())
+        assert obj["surge_multiplier"] == 1.5
+        assert obj["base_pay_mxn"] == pytest.approx(control.pay)  # sin premultiplicar
 
 
 # ===========================================================================

@@ -86,12 +86,18 @@ from core.agent import reasons
 #: Punto de partida antes de que el modelo opine nunca. Tambien es el valor al
 #: que se vuelve si nadie logra proponer nada en todo el turno.
 #:
-#: Calibrado sobre TUNING_SEEDS con el arnes de evaluacion (ver
+#: Calibrado sobre TUNING_SEEDS con `scripts/calibrate.py` (ver
 #: docs/Bloque 3/RESULTADOS.md). Parece alto para un repartidor real, y lo es:
 #: el cuello de botella del turno es el TIEMPO, no la oferta. Con ~200 ofertas
-#: en 8 horas y media hora por entrega, solo caben unas 25; ser selectivo gana
+#: en 8 horas, solo caben unas pocas decenas de entregas; ser selectivo gana
 #: mas dinero Y completa mas pedidos que aceptar todo lo razonable.
-DEFAULT_RESERVATION_WAGE_MXN_HR = 400.0
+#:
+#: Bajo de 400 a 275 al ampliar el ZoneMap de 4 a 16 zonas: el mapa nuevo es
+#: mas disperso, los trayectos son mas largos y la misma oferta rinde menos
+#: MXN/hr, asi que un umbral de 400 rechazaba casi todo (la tasa de
+#: aceptacion cayo a 5.5%). Es el ejemplo de por que la calibracion no
+#: sobrevive a un cambio del mundo simulado: hay que rehacer el barrido.
+DEFAULT_RESERVATION_WAGE_MXN_HR = 275.0
 
 MIN_RESERVATION_WAGE_MXN_HR = 60.0
 MAX_RESERVATION_WAGE_MXN_HR = 600.0
