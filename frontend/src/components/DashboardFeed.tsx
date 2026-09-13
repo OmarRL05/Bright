@@ -7,18 +7,14 @@ interface DashboardFeedProps {
 export default function DashboardFeed({ events = [] }: DashboardFeedProps) {
   if (!Array.isArray(events) || events.length === 0) {
     return (
-      <div className="flex h-96 items-center justify-center rounded-md border border-gray-700 bg-gray-900 p-4 text-sm font-mono text-gray-500">
+      <div className="flex h-96 items-center justify-center rounded-lg border border-gray-200 bg-white p-4 text-sm text-gray-400">
         Esperando eventos de la simulación...
       </div>
     );
   }
 
   return (
-    <div className="h-96 overflow-y-auto rounded-md border border-gray-700 bg-gray-900 p-4 font-mono text-sm text-white shadow-lg">
-      <h3 className="mb-4 text-lg font-bold uppercase tracking-wider text-cyan-400">
-        Logix-Router AI Feed
-      </h3>
-
+    <div className="h-96 overflow-y-auto rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
       <ul>
         {events.map((log, index) => {
           const time = new Date(log.timestamp).toLocaleTimeString("es-MX", {
@@ -30,17 +26,23 @@ export default function DashboardFeed({ events = [] }: DashboardFeedProps) {
           return (
             <li
               key={`${log.offer_id}-${log.timestamp}-${index}`}
-              className="mb-3 border-b border-gray-800 pb-3"
+              className="mb-3 border-b border-gray-100 pb-3 last:mb-0 last:border-b-0 last:pb-0"
             >
-              <span className="text-gray-500">[{time}] </span>
-              <span className="font-bold text-gray-200">{log.offer_id} </span>
+              <span className="text-xs text-gray-400">[{time}] </span>
+              <span className="text-sm font-semibold text-gray-900">
+                {log.offer_id}{" "}
+              </span>
 
               {log.accepted ? (
-                <span className="ml-2 font-bold text-green-400">ACEPTADO</span>
+                <span className="ml-1 text-sm font-semibold text-green-600">
+                  ACEPTADO
+                </span>
               ) : (
-                <div className="mt-1 border-l-2 border-red-500 pl-4">
-                  <span className="font-bold text-red-500">RECHAZADO</span>
-                  <span className="mt-1 block text-xs text-gray-400">
+                <div className="mt-1 border-l-2 border-red-300 pl-3">
+                  <span className="text-sm font-semibold text-red-500">
+                    RECHAZADO
+                  </span>
+                  <span className="mt-1 block text-xs text-gray-500">
                     Motivo: {log.reason || "Sin motivo especificado"}
                   </span>
                 </div>
