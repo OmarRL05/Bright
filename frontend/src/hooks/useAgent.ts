@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { AgentStatus, DecisionEvent, ReplaySummary } from "@/lib/types";
+import type { AgentStatus, DecisionEvent, ReplaySummary, ShockInfo } from "@/lib/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -68,22 +68,122 @@ export function useAgent(limit = 25) {
 }
 
 /**
- * Carga un turno grabado y devuelve sus eventos `decision`.
+ * Shocks vigentes (GET /shocks, sin `at`: todos los registrados en la
+ * corrida). Es lo que hace que el mapa reaccione cuando un juez inyecta un
+ * surge en vivo con POST /shock -- el requisito de "al menos un shock en
+ * vivo durante la demo" no demuestra nada si no se ve en pantalla.
+ */
+export function useShocks(pollMs = POLL_MS) {
+  const [shocks, setShocks] = useState<ShockInfo[]>([]);
+
+  useEffect(() => {
+    let cancelado = false;
+    const poll = () => {
+      fetch(`${API_URL}/shocks`, { cache: "no-store" })
+        .then((res) => (res.ok ? res.json() : { active: [] }))
+        .then((data: { active: ShockInfo[] }) => {
+          if (!cancelado) setShocks(data.active ?? []);
+        })
+        .catch(() => {
+          if (!cancelado) setShocks([]);
+        });
+    };
+    poll();
+    const id = setInterval(poll, pollMs);
+    return () => {
+      cancelado = true;
+      clearInterval(id);
+    };
+  }, [pollMs]);
+
+  return shocks;
+}
+
+/**
+ * Geometría real sobre calles (GET /route) para cada par zona→zona en
+ * `pairs`, con caché en memoria del lado del cliente además del caché por
+ * proceso que ya tiene el backend -- no hay razón para volver a pedir un
+ * par que ya se resolvió, ni aunque cambie qué decisiones se muestran.
+ *
+ * Un valor `null` significa "ya se pidió y no hay ruta real disponible"
+ * (el `.graphml` no está descargado, o esas zonas no tienen camino) -- lo
+ * distingue de "todavía no se pidió" (ausente del objeto) para que quien
+ * dibuja pueda caer a línea recta sin reintentar en cada render.
+ */
+export function useRoutes(pairs: string[]) {
+  const [routes, setRoutes] = useState<Record<string, [number, number][] | null>>({});
+
+  // `routes` se lee adentro a propósito para no volver a pedir un par ya
+  // resuelto; meterlo en las deps del efecto reintroduciría el loop que
+  // esto evita, por eso el disable en el arreglo de deps de abajo.
+  useEffect(() => {
+    const pendientes = pairs.filter((par) => !(par in routes));
+    if (pendientes.length === 0) return;
+
+    let cancelado = false;
+    for (const par of pendientes) {
+      const [fromZone, toZone] = par.split("-");
+      fetch(`${API_URL}/route?from_zone=${fromZone}&to_zone=${toZone}`, { cache: "no-store" })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data: { coords: [number, number][] } | null) => {
+          if (cancelado) return;
+          setRoutes((prev) => (par in prev ? prev : { ...prev, [par]: data?.coords ?? null }));
+        })
+        .catch(() => {
+          if (!cancelado) setRoutes((prev) => (par in prev ? prev : { ...prev, [par]: null }));
+        });
+    }
+    return () => {
+      cancelado = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pairs]);
+
+  return routes;
+}
+
+/**
+ * Carga un turno grabado y devuelve sus eventos `decision`, de la más nueva
+ * a la más vieja (mismo orden que GET /decisions), enriquecidos con
+ * `zone_pickup`/`zone_dropoff` -- para que el mapa pueda dibujar la ruta con
+ * la MISMA lista que ya consume el feed, sin un segundo tipo de dato.
  *
  * El archivo llega en JSONL crudo -- el mismo que pasa
  * `validate_format.py --event-log` -- asi que reproducir un turno no necesita
  * ni motor ni red, que es justo lo que el protocolo describe como modo
- * replay.
+ * replay. `zone_pickup`/`zone_dropoff` no viven en el evento `decision`
+ * oficial (event_log_schema.json los deja en `order_offered`, aparte), asi
+ * que se unen aqui por `order_id` -- el mismo join que hace
+ * `to_dashboard_decision_event` del lado del backend para GET /decisions en
+ * vivo.
  */
 export async function loadReplay(seed: number): Promise<DecisionEvent[]> {
   const res = await fetch(`${API_URL}/replay/${seed}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`no hay replay para seed ${seed}`);
   const texto = await res.text();
 
-  return texto
+  type LineaCruda = { event?: string; order_id?: string; [campo: string]: unknown };
+
+  const lineas: LineaCruda[] = texto
     .split("\n")
     .filter((linea) => linea.trim().length > 0)
-    .map((linea) => JSON.parse(linea) as { event?: string })
-    .filter((evento): evento is DecisionEvent => evento.event === "decision")
+    .map((linea) => JSON.parse(linea) as LineaCruda);
+
+  const zonasPorOrden = new Map<string, { zone_pickup: number; zone_dropoff: number }>();
+  for (const evento of lineas) {
+    if (evento.event === "order_offered" && typeof evento.order_id === "string") {
+      zonasPorOrden.set(evento.order_id, {
+        zone_pickup: evento.zone_pickup as number,
+        zone_dropoff: evento.zone_dropoff as number,
+      });
+    }
+  }
+
+  return lineas
+    .filter((evento) => evento.event === "decision")
+    .map((evento) => ({
+      ...(evento as unknown as DecisionEvent),
+      ...zonasPorOrden.get(evento.order_id as string),
+    }))
     .reverse();
 }

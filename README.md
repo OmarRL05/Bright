@@ -36,8 +36,8 @@ aquí es un TODO de verdad.
 | — Evaluación | `core/evaluation/`, `scripts/run_evaluation.py` | ✅ 6 políticas, seeds disjuntas, CSV del template |
 | 4 — Optimizador global | `core/optimization/ortools_optimizer.py`, `core/routing/ortools_optimizer.py` | ⚠️ VRPTW funcional, pero **dos rutas de código** con modelos de datos distintos; ninguna conectada al estado real |
 | 5 — Grafo vial | `core/routing/graph.py` | ✅ OSMnx + NetworkX con cierres/tráfico — requiere descargar `monterrey.graphml` (ver `backend/data/README.md`) |
-| 6 — API de simulación | `api/routes.py`, `api/sockets.py` | ❌ `NotImplementedError`: arrancar/pausar el turno y el WebSocket de estado |
-| 6 — Frontend | `frontend/src/` | ❌ Scaffold: `Map.tsx` es un placeholder, el feed no está conectado |
+| 6 — API de simulación | `api/routes.py`, `api/sockets.py` | ❌ `NotImplementedError`: arrancar/pausar el turno y el WebSocket de estado siguen sin implementarse — el dashboard no depende de ninguno de los dos, ver más abajo |
+| 6 — Frontend | `frontend/src/` | ✅ Feed, métricas y mapa reales por REST (`useAgent`, `useZones`) — cero datos inventados. Mapa: Leaflet + `GET /zones`, ruta reconstruida de `GET /decisions`/`GET /replay/{seed}`, shocks en vivo de `GET /shocks` |
 
 ## Quickstart
 
@@ -89,7 +89,22 @@ cp .env.local.example .env.local
 npm run dev
 ```
 
-Abre `http://localhost:3000`.
+Abre `http://localhost:3000`. Con el backend arrancado pero sin turno
+corriendo, vas a ver las 16 zonas en el mapa y el feed vacío — es el estado
+real, no un error. Dos formas de poblarlo:
+
+- **En vivo**: manda pings a `/decide` (`python3 backend/scripts/demo.py`, o
+  a mano con `curl`) y el feed/mapa se refrescan solos cada 1.5 s.
+- **Grabado**: `python3 backend/scripts/run_evaluation.py --event-log
+  backend/logs/replay_seed_101.jsonl --seed 101` y elígelo en "Turnos
+  grabados" — dibuja la ruta completa del turno de una vez.
+
+> **Nada que instalar aparte:** el mapa usa `leaflet`/`react-leaflet` (ya en
+> `package.json`, sin llave de API — tiles de CartoDB, gratis). El único paso
+> manual real es el `.env.local` de arriba; si ya tenías uno de antes de este
+> cambio, bórralo y vuelve a copiarlo — la plantilla anterior traía
+> `NEXT_PUBLIC_API_URL` con un `/api` que no corresponde a ningún endpoint
+> real (ver tabla de abajo) y deja el dashboard entero pegado en "sin backend".
 
 ## Endpoints
 
@@ -101,10 +116,15 @@ Abre `http://localhost:3000`.
 | `GET` | `/shocks` | Qué shocks están vigentes (`?at=<sim_time ISO>`) |
 | `DELETE` | `/shocks` | Limpia los vigentes entre pasadas del ensayo |
 | `GET` | `/status` | Salud del servicio, incluido `degraded` |
+| `GET` | `/decisions?limit=N` | Feed del dashboard, con `zone_pickup`/`zone_dropoff` para el mapa |
+| `GET` | `/zones` | Las 16 zonas (`zone_id`, `coord`, `demand_score`, `flagged`) — de aquí sale el mapa |
+| `GET` | `/replays` / `/replay/{seed}` / `/replay/{seed}/summary` | Turnos grabados, en JSONL crudo |
 | `GET` | `/health` | Liveness |
 
-`/decide` y `/shock` **no** van bajo el prefijo `/api`: el material del reto
-golpea `http://host:puerto/decide` directo.
+Ninguno de estos va bajo el prefijo `/api`: el material del reto golpea
+`http://host:puerto/decide` directo, y el resto sigue la misma convención
+por consistencia. `/api/simulation/*` (en `api/routes.py`) es la excepción —
+y sigue sin implementarse.
 
 ## Verificación — las tres banderas del validador
 

@@ -287,6 +287,22 @@ def to_decision_event(record: DecisionRecord) -> dict[str, Any]:
     }
 
 
+def to_dashboard_decision_event(record: DecisionRecord) -> dict[str, Any]:
+    """`to_decision_event` + zona -- SOLO para GET /decisions (el feed del
+    dashboard), nunca para el event log oficial.
+
+    `zone_pickup`/`zone_dropoff` no son parte del evento `decision` de
+    event_log_schema.json (esos viven en `order_offered`, aparte) -- se
+    agregan aqui, no en `to_decision_event`, para no meterle campos de mas a
+    la exportacion oficial. El dashboard los necesita para poder dibujar la
+    ruta en el mapa sin tener que reconstruirla desde un JSONL.
+    """
+    event = to_decision_event(record)
+    event["zone_pickup"] = _get(record.order, "zone_pickup")
+    event["zone_dropoff"] = _get(record.order, "zone_dropoff")
+    return event
+
+
 def to_order_offered_event(record: DecisionRecord) -> dict[str, Any]:
     """Evento `order_offered` reconstruido desde la oferta registrada.
 

@@ -144,3 +144,51 @@ class TestRealMonterreyGraph:
         assert len(affected) > 0
         rerouted = network.travel_time(macroplaza, tec_de_monterrey)
         assert rerouted >= baseline
+
+
+# ==========================================================================
+# shortest_path_coords -- geometria real para el mapa (Bloque 6)
+# ==========================================================================
+
+
+def test_shortest_path_coords_follows_the_faster_route(diamond_network):
+    coords = diamond_network.shortest_path_coords((0.000, 0.000), (0.010, 0.010))
+    # A -> B -> D (la ruta rapida), no A -> C -> D.
+    assert coords == [(0.000, 0.000), (0.010, 0.000), (0.010, 0.010)]
+
+
+def test_shortest_path_coords_reroutes_after_closure(diamond_network):
+    diamond_network.apply_road_event(
+        RoadEvent(type="closure", location=(0.010, 0.000), multiplier=None, timestamp=0.0)
+    )
+    coords = diamond_network.shortest_path_coords((0.000, 0.000), (0.010, 0.010))
+    assert coords == [(0.000, 0.000), (0.000, 0.010), (0.010, 0.010)]
+
+
+def test_shortest_path_coords_survives_a_fully_closed_diamond(diamond_network):
+    """Cerrar las dos rutas posibles NO produce None aqui -- un cierre se
+    modela como peso infinito, no como arista removida (mismo criterio que
+    `travel_time`/`travel_distance`, ver su docstring), asi que Dijkstra
+    sigue encontrando *un* camino, solo que carisimo. `None` es para grafos
+    genuinamente desconectados (ver el test de abajo), no para "todo
+    cerrado" -- son dos escenarios distintos y confundirlos fue el error
+    original de este test."""
+    diamond_network.apply_road_event(
+        RoadEvent(type="closure", location=[(0.000, 0.000), (0.010, 0.000)], multiplier=None, timestamp=0.0)
+    )
+    diamond_network.apply_road_event(
+        RoadEvent(type="closure", location=[(0.000, 0.000), (0.000, 0.010)], multiplier=None, timestamp=0.0)
+    )
+    coords = diamond_network.shortest_path_coords((0.000, 0.000), (0.010, 0.010))
+    assert coords is not None and coords[0] == (0.000, 0.000) and coords[-1] == (0.010, 0.010)
+
+
+def test_shortest_path_coords_none_when_graph_is_disconnected():
+    """None es para esto: dos componentes sin NINGUNA arista entre ellos --
+    no hay peso que Dijkstra pueda seguir, ni siquiera uno infinito."""
+    g = nx.MultiDiGraph()
+    g.graph["crs"] = "epsg:4326"
+    g.add_node(1, x=0.0, y=0.0)
+    g.add_node(2, x=1.0, y=1.0)  # sin ninguna arista hacia/desde el nodo 1
+    network = RoadNetwork.from_graph(g)
+    assert network.shortest_path_coords((0.0, 0.0), (1.0, 1.0)) is None

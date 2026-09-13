@@ -31,7 +31,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
-from core.agent.journal import JOURNAL, to_decision_event
+from core.agent.journal import JOURNAL, to_dashboard_decision_event
 
 router = APIRouter(tags=["replay"])
 
@@ -66,7 +66,7 @@ async def decisions(limit: int = 20) -> dict:
     registros = JOURNAL.recent(limit)
     return {
         "count": len(registros),
-        "decisions": [to_decision_event(r) for r in registros],
+        "decisions": [to_dashboard_decision_event(r) for r in registros],
     }
 
 

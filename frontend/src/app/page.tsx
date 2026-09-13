@@ -1,9 +1,22 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
 import DashboardFeed from "@/components/DashboardFeed";
-import { Map } from "@/components/Map";
 import { loadReplay, useAgent } from "@/hooks/useAgent";
+
+// Leaflet toca `window` al importarse -- sin ssr:false, el primer render en
+// el servidor revienta. Ver frontend/AGENTS.md sobre no asumir el Next.js
+// que ya conoces: en el App Router esto sigue resolviendose con
+// next/dynamic, no con una condicion de `typeof window`.
+const Map = dynamic(() => import("@/components/Map").then((m) => m.Map), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-full min-h-96 w-full items-center justify-center rounded-lg border border-gray-200 text-sm text-gray-400 dark:border-gray-800">
+      Cargando mapa…
+    </div>
+  ),
+});
 import {
   CONSTRAINT_LABELS,
   isSafetyConstraint,
@@ -67,18 +80,13 @@ export default function Home() {
       <StatTiles decisions={visibles} status={status} />
 
       <section className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          <h2 className="mb-2 text-sm font-medium text-gray-500">
-            Decisiones {enVivo ? "" : "(grabadas)"}
+        <div className="flex flex-col gap-2 lg:col-span-2">
+          <h2 className="text-sm font-medium text-gray-500">
+            Ruta {enVivo ? "en vivo" : `del turno grabado (seed=${replaySeed})`}
           </h2>
-          <DashboardFeed
-            decisions={visibles}
-            emptyMessage={
-              connected
-                ? "Aún no hay decisiones. Manda un ping a POST /decide o corre scripts/demo.py."
-                : "Sin backend: no hay nada que mostrar."
-            }
-          />
+          <div className="h-[28rem]">
+            <Map decisions={visibles} live={enVivo} />
+          </div>
         </div>
 
         <div className="flex flex-col gap-4">
@@ -97,10 +105,17 @@ export default function Home() {
       </section>
 
       <section>
-        <h2 className="mb-2 text-sm font-medium text-gray-500">Mapa</h2>
-        <div className="h-40">
-          <Map />
-        </div>
+        <h2 className="mb-2 text-sm font-medium text-gray-500">
+          Decisiones {enVivo ? "" : "(grabadas)"}
+        </h2>
+        <DashboardFeed
+          decisions={visibles}
+          emptyMessage={
+            connected
+              ? "Aún no hay decisiones. Manda un ping a POST /decide o corre scripts/demo.py."
+              : "Sin backend: no hay nada que mostrar."
+          }
+        />
       </section>
     </div>
   );
