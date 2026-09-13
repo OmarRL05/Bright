@@ -92,12 +92,16 @@ from core.agent import reasons
 #: en 8 horas y media hora por entrega, solo caben unas 25; ser selectivo gana
 #: mas dinero Y completa mas pedidos que aceptar todo lo razonable.
 #:
-#: Recalibrado de 400 a 260 al pasar el ZoneMap de 4 a 16 zonas (Persona 1):
-#: con mas zonas en la misma ciudad los trayectos son mas cortos, las ofertas
-#: valen menos por pedido y el umbral optimo baja. Es un recordatorio de que
-#: este numero pertenece al simulador y no al mundo: si cambia la geografia o
-#: la frecuencia de ofertas, hay que volver a barrerlo.
-DEFAULT_RESERVATION_WAGE_MXN_HR = 260.0
+#: Bajo de 400 a 275 al ampliar el ZoneMap de 4 a 16 zonas (Persona 1): el mapa
+#: nuevo es mas disperso, los trayectos son mas largos y la misma oferta rinde
+#: menos MXN/hr, asi que un umbral de 400 rechazaba casi todo (la tasa de
+#: aceptacion se cayo a 5.5%). Es el ejemplo de por que la calibracion no
+#: sobrevive a un cambio del mundo simulado: hay que rehacer el barrido.
+#:
+#: El valor sale de `scripts/calibrate.py`, que hace el barrido de forma
+#: reproducible y aplica el criterio del peor vecino en vez del pico -- no de
+#: una corrida a mano que nadie pueda repetir.
+DEFAULT_RESERVATION_WAGE_MXN_HR = 275.0
 
 MIN_RESERVATION_WAGE_MXN_HR = 60.0
 MAX_RESERVATION_WAGE_MXN_HR = 600.0

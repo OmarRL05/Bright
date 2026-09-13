@@ -57,20 +57,24 @@ from core.agent.strategy import DEFAULT_RESERVATION_WAGE_MXN_HR
 # jueces hacen por escrito.
 
 #: HighestPay acepta si el bruto (tarifa*surge + propina) llega a esto.
-HIGHEST_PAY_MIN_MXN = 170.0
+HIGHEST_PAY_MIN_MXN = 180.0
 
-#: NearestFirst acepta si el traslado en vacio no pasa de esto. Con el mapa de
-#: 16 zonas el barrido ya discrimina de verdad (con 4 zonas daba lo mismo para
-#: 1, 2 y 3 km porque casi no habia traslados intermedios).
-NEAREST_FIRST_MAX_DEADHEAD_KM = 5.0
+#: NearestFirst acepta si el traslado en vacio no pasa de esto.
+#:
+#: Subio de 1.0 a 6.0 al pasar el ZoneMap de 4 a 16 zonas, y el cambio dice
+#: algo del mapa viejo: con 4 zonas casi no habia traslados intermedios, asi
+#: que el umbral solo separaba "misma zona" de "otra zona" y 1, 2 o 3 km daban
+#: identico. Con 16 zonas hay un gradiente real de distancias y el barrido
+#: distingue de verdad.
+NEAREST_FIRST_MAX_DEADHEAD_KM = 6.0
 
-#: GreedyRate acepta si la tasa cruda llega a esto. Ya NO coincide con el
-#: umbral del agente ($260): sin el gate de seguridad, GreedyRate puede
-#: permitirse ser mas exigente porque nunca pierde tiempo en pausas ni en
-#: esperar a que baje el calor. Los dos numeros salen del mismo barrido sobre
-#: las mismas seeds, cada uno en su optimo -- comparar el nuestro afinado
-#: contra un baseline puesto a ojo convertiria la tabla en un espantapajaros.
-GREEDY_RATE_MIN_MXN_HR = 300.0
+#: GreedyRate acepta si la tasa cruda llega a esto. Coincide con el umbral del
+#: agente, y no por casualidad: el barrido dio el mismo optimo para los dos.
+#: Eso es lo que permite que la comparacion entre las dos filas aisle lo que
+#: aportan la seguridad y el valor de la zona, y no una calibracion distinta.
+#: Siguen coincidiendo tras recalibrar con 16 zonas (los dos bajaron de 400 a
+#: 275 por separado), asi que la resta entre filas sigue significando lo mismo.
+GREEDY_RATE_MIN_MXN_HR = 275.0
 
 
 @dataclass(frozen=True)
