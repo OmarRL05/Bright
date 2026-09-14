@@ -125,9 +125,15 @@ Decision = Literal["ACCEPT", "SKIP"]
 # --- Constraint 1: zonas marcadas de noche --------------------------------
 #: Zonas consideradas inseguras de noche. Se derivan del ZoneMap en vez de
 #: escribirse como enteros sueltos: asi no pueden desincronizarse del catalogo
-#: real de zonas que usa el simulador (Bloque 1). Centro es la de mayor
-#: demand_score/densidad urbana -- criterio placeholder del equipo.
-FLAGGED_ZONE_NAMES: tuple[str, ...] = ("Centro",)
+#: real de zonas que usa el simulador (Bloque 1).
+#:
+#: Son tres y no una (Persona 1, con el ZoneMap ampliado a 16 zonas): dejarlo
+#: en solo "Centro" significaba que `flagged_zone_night` practicamente nunca
+#: se disparaba contra los ids que usan los ejemplos oficiales -- un juez podia
+#: mandar zone_dropoff=11 a las 23:00 y siempre aceptabamos. Cada una tiene su
+#: razon: Centro (densidad y vida nocturna), Parque Industrial (periferia poco
+#: transitada de noche) y Linda Vista (periferia con poca iluminacion).
+FLAGGED_ZONE_NAMES: tuple[str, ...] = ("Centro", "Parque Industrial", "Linda Vista")
 
 
 def _resolve_flagged_zones() -> frozenset[int]:

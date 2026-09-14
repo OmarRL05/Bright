@@ -13,7 +13,9 @@ numeros de las seeds con las que calibro. Ver `core/evaluation/seeds.py`.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -57,7 +59,11 @@ def main() -> int:
     parser.add_argument("--vehicle", default="moto", choices=["moto", "car", "bike"])
     parser.add_argument("--shift-hours", type=float, default=8.0)
     parser.add_argument("--start-zone", type=int, default=0)
-    parser.add_argument("--out", default="out/results_table.csv")
+    # data/ y no out/: out/ esta en .gitignore (ahi viven los event logs, que
+    # pesan). La tabla de resultados es la EVIDENCIA del criterio de Results
+    # y el dashboard la sirve por HTTP, asi que tiene que existir en un clon
+    # limpio, antes de que nadie corra nada.
+    parser.add_argument("--out", default="data/results_table.csv")
     parser.add_argument(
         "--event-log",
         help="graba el event log JSONL de UN turno (requiere --seed)",
@@ -114,7 +120,25 @@ def main() -> int:
     ]
     destino = write_csv(resultados, Path(args.out), notas)
 
+    # Sidecar con lo que el CSV no puede llevar: sus columnas son las del
+    # template oficial y no se le anaden campos propios, pero el dashboard
+    # necesita saber cuantos turnos son y con que vehiculo para no rotular
+    # como "el turno de ahorita" una media de 12 turnos held-out.
+    meta = {
+        "shifts": len(shift_seeds),
+        "shift_hours": args.shift_hours,
+        "vehicle": args.vehicle,
+        "start_zone": args.start_zone,
+        "conjunto": conjunto,
+        "reporting_seeds": list(seed_sets.REPORTING_SEEDS),
+        "tuning_seeds": list(seed_sets.TUNING_SEEDS),
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    meta_destino = destino.with_name(destino.stem + "_meta.json")
+    meta_destino.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n")
+
     print(f"CSV escrito en {destino}")
+    print(f"Metadatos en {meta_destino}")
     print(
         f"\nOurAgent vs {mejor_baseline.policy} (mejor baseline): "
         f"{_delta_pct(agente.mean_earnings_mxn, mejor_baseline.mean_earnings_mxn):+.1f}%"

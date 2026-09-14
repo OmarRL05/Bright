@@ -132,6 +132,24 @@ def accepted(adjusted_rate: float, reservation: float) -> str:
     )
 
 
+def note_shocks(reason: str, applied: tuple[str, ...] | list[str]) -> str:
+    """Anexa al `reason` los shocks que movieron los numeros de esta decision.
+
+    Cuando un juez inyecta un surge en vivo y la siguiente oferta cambia de
+    SKIP a ACCEPT, el string que se lee en voz alta tiene que decir por que
+    cambio. Sin esto, la demo muestra dos decisiones distintas sobre entradas
+    aparentemente iguales y el credito de Judgment se pierde justo donde se
+    estaba tratando de ganar.
+
+    Sigue pasando por `cap_words`, asi que anexar no puede romper el limite de
+    40 palabras: si el reason base ya estaba cerca del tope, la nota se corta
+    con el resto en vez de invalidar la respuesta.
+    """
+    if not applied:
+        return cap_words(reason)
+    return cap_words(f"{reason} [shock: {', '.join(applied)}]")
+
+
 def internal_error() -> str:
     """Reason de ultimo recurso.
 

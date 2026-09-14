@@ -16,7 +16,7 @@ from core.models import RoadEvent
 
 # Nombres alineados a core.routing.distance_provider.DistanceProvider (ver
 # docs/Bloque 3/01_Plan.md seccion 3 y seccion 11 pregunta #1): RoadNetwork
-# debe satisfacer ese Protocol estructuralmente para que DecisionEngine
+# debe satisfacer ese Protocol estructuralmente para que sus consumidores
 # pueda intercambiarlo con EuclideanDistanceProvider sin adaptador.
 
 
@@ -110,6 +110,34 @@ class RoadNetwork:
             d = self._nearest_node(destination)
             meters = nx.shortest_path_length(self.graph, o, d, weight=self._weight_fn("length", apply_traffic=False))
             return meters / 1000.0
+
+    def shortest_path_coords(
+        self, origin: tuple[float, float], destination: tuple[float, float]
+    ) -> list[tuple[float, float]] | None:
+        """Coordenadas (lat, lon) del camino mas corto, nodo por nodo.
+
+        Para dibujar la ruta REAL sobre calles (Bloque 6, mapa del
+        dashboard) en vez de una linea recta zona->zona. `travel_time`/
+        `travel_distance` ya resuelven este mismo Dijkstra pero solo
+        devuelven el numero -- esto devuelve la geometria.
+
+        None solo si el grafo esta genuinamente desconectado (sin ninguna
+        arista entre origen y destino) -- NO si "todo esta cerrado": un
+        cierre es peso infinito, no arista removida (mismo criterio que
+        `travel_time`/`travel_distance`, ver su docstring), asi que Dijkstra
+        igual devuelve un camino aunque sea carisimo. Quien dibuja el mapa
+        decide que hacer con una ruta cara (o con `None`), no esta funcion.
+        """
+        with self._lock:
+            o = self._nearest_node(origin)
+            d = self._nearest_node(destination)
+            try:
+                nodes = nx.shortest_path(
+                    self.graph, o, d, weight=self._weight_fn("travel_time", apply_traffic=True)
+                )
+            except nx.NetworkXNoPath:
+                return None
+            return [(self.graph.nodes[n]["y"], self.graph.nodes[n]["x"]) for n in nodes]
 
     def apply_road_event(self, event: RoadEvent) -> list[tuple[int, int]]:
         """Ajusta pesos de aristas afectadas por un cierre/trafico.

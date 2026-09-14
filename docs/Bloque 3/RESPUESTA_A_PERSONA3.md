@@ -141,7 +141,7 @@ del orden en que mergeemos:
 |---|---|
 | `core/agent/reasons.py` | builder de `reason` con <40 palabras **garantizado** por `cap_words`, contando igual que `validate_format.py` (`len(reason.split())`) |
 | `core/agent/journal.py` | `explain_decision` completo: las 5 claves del schema, con los números *del momento de decidir*, no recalculados |
-| `core/agent/strategy.py` | tier2 + modo degradado (protocolo §7), con `ClaudeAdvisor` real |
+| `core/agent/strategy.py` | tier2 + modo degradado (protocolo §7), con advisor real contra la API del modelo |
 | `tests/test_safety.py`, `test_journal.py`, `test_strategy.py` | ~90 tests, incluido uno que corre `validate_format.py --event-log` de verdad en un subproceso |
 
 **Una cosa que necesito de ti para tier2:** el punto de enganche que señalaste,

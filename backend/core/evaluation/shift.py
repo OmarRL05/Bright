@@ -55,12 +55,14 @@ from typing import IO, Any
 
 from api.schemas import CourierStateOverrides, DecideRequest
 from core.agent.safety import evaluate_safety_full
+from core.agent.shocks import SHOCKS
 from core.models import (
     DEFAULT_ZONE_MAP,
     VEHICLE_PROFILES,
     DistanceMatrix,
     EventType,
     Offer,
+    RoadEvent,
     VehicleProfile,
     VehicleType,
     ZoneMap,
@@ -145,6 +147,10 @@ class ShiftState:
             last_break_end_time=self.last_break_end_time,
             shift_end_time=self.config.shift_end_time,
             in_flight_orders=list(self.in_flight),
+            # Incluye la pausa obligatoria, que no es un pedido y por tanto no
+            # cabe en `in_flight_orders`. Sin esto el endpoint ve una cola mas
+            # corta que la real y acepta algo que no cabe en el turno.
+            unavailable_until=self.busy_until,
         )
 
 
@@ -169,19 +175,6 @@ class ShiftRunner:
 
     def distance_km(self, from_zone: int, to_zone: int) -> float:
         return self._matrix.travel_distance(self._coord(from_zone), self._coord(to_zone))
-
-    def travel_min(self, from_zone: int, to_zone: int, profile: VehicleProfile) -> float:
-        """Minutos entre dos zonas al perfil del vehiculo.
-
-        Se deriva de la distancia y la velocidad del perfil en vez de usar el
-        tiempo precalculado de la matriz: esa matriz se construyo con la
-        velocidad del proveedor euclidiano por defecto, y aqui la velocidad
-        tiene que ser la del vehiculo del turno -- si no, moto, car y bike
-        tardarian lo mismo.
-        """
-        return self.distance_km(from_zone, to_zone) / profile.avg_speed_kmh * 60.0
-
-    # -- construccion del request ------------------------------------------
 
     def build_request(self, offer: Offer, state: ShiftState, sim_time: datetime) -> DecideRequest:
         """Traduce una oferta del stream al contrato oficial.
@@ -362,9 +355,23 @@ class ShiftRunner:
         # `order_offered` y el `shift_end` ANTES de la primera decision, y el
         # event log tiene que ir en orden cronologico: un log con las decisiones
         # despues del fin del turno no sirve para replay ni para el dashboard.
+        # El corredor sabe donde esta el repartidor; el generador no. Emitir
+        # `order_offered` desde aqui es lo unico que hace que el log lleve el
+        # deadhead real y no un 0.0 de relleno.
+        engine.defer_order_logging = True
+
+        # Los shocks del turno entran al MISMO registro que lee el endpoint.
+        # Antes solo se escribian al log y no afectaban a ninguna decision: el
+        # turno se registraba como si hubiera habido cierres y lluvia, y decidia
+        # como si no hubiera pasado nada. Reproducir ese log daba decisiones
+        # distintas, y la culpa parecia del replay.
+        SHOCKS.reset()
         self._log_strategy(engine, policy)
 
         for event in engine.event_stream():
+            if isinstance(event, RoadEvent):
+                SHOCKS.apply_recorded(engine.shock_event(event))
+                continue
             if not isinstance(event, Offer):
                 continue
             offer = event
@@ -375,6 +382,8 @@ class ShiftRunner:
             self.take_break_if_due(state, sim_time)
 
             request = self.build_request(offer, state, sim_time)
+            if self.log_file is not None:
+                engine._log_order_offered(offer, request.distance_pickup_km)
             resultado = policy.decide(request, self, state, sim_time)
             accepted = bool(resultado)
 

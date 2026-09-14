@@ -3,7 +3,7 @@
 Es la segunda mitad del fast path. La primera es `core.agent.safety`, y el
 orden entre las dos no es negociable: la seguridad decide antes y, si bloquea,
 esta capa no se consulta (ver `safety.combine`). Analogo a `MIN_PAY_PER_KM` en
-`core.agent.decision` (el motor VRPTW de coordenadas), pero en MXN/hr y sobre
+el motor VRPTW de coordenadas que hubo antes, pero en MXN/hr y sobre
 el contrato oficial de zonas + vehiculo.
 
 Tres cosas que esta capa hace y que conviene poder defender
@@ -49,14 +49,22 @@ from core.models import DEFAULT_ZONE_MAP, VehicleProfile
 #: significado pudiendo desincronizarse.
 RESERVATION_WAGE_MXN_HR = strategy_layer.DEFAULT_RESERVATION_WAGE_MXN_HR
 
-#: Cuanto pesa la zona de dropoff en la tasa ajustada. Con 0.6, terminar en
-#: Centro (demand_score 0.9) vale +24% y terminar en Apodaca (0.3) vale -12%.
+#: Cuanto pesa la zona de dropoff en la tasa ajustada. Con 1.25, terminar en
+#: Centro (demand_score 0.9) vale +50% y terminar en Parque Industrial (0.25)
+#: vale -31%.
 #:
-#: Calibrado sobre TUNING_SEEDS (ver docs/Bloque 3/RESULTADOS.md): aporta
-#: +6.1% de ganancias medias. Se eligio 0.6 y no el maximo de la rejilla (0.4)
-#: porque con 12 turnos la diferencia entre los dos esta dentro del ruido y 0.6
-#: es el punto cuyo PEOR vecino en la rejilla es mas alto.
-DROPOFF_DEMAND_WEIGHT = 0.6
+#: Subio de 0.6 a 1.25 al aplicar el factor de rodeo a las distancias, y el
+#: salto tiene sentido: con trayectos realistas (un 35% mas largos), acabar el
+#: turno en una zona fria cuesta de verdad -- el siguiente pedido nace lejos y
+#: ahora ese "lejos" se paga en combustible y en minutos. Donde te deja el
+#: pedido dejo de ser un matiz y paso a ser un factor de primer orden.
+#:
+#: Calibrado con `scripts/calibrate.py` sobre TUNING_SEEDS. El barrido
+#: anterior llegaba solo hasta 1.0 y el optimo caia en el borde -- sintoma
+#: clasico de rejilla corta. Ampliada hasta 2.0 aparecio un optimo interior
+#: con caida clara despues; la herramienta ahora avisa cuando un elegido cae
+#: en un extremo.
+DROPOFF_DEMAND_WEIGHT = 1.25
 
 #: demand_score que se considera "ni caliente ni fria" (sin bonus ni castigo).
 NEUTRAL_DEMAND_SCORE = 0.5
@@ -103,6 +111,7 @@ def evaluate_economics(
     profile: VehicleProfile | None = None,
     zone_dropoff: int | None = None,
     reservation_wage_mxn_hr: float | None = None,
+    dropoff_demand_weight: float | None = None,
 ) -> EconomicsResult:
     """Aritmetica de la oferta. Pura: sin I/O y sin reloj.
 
@@ -113,6 +122,13 @@ def evaluate_economics(
     `reservation_wage_mxn_hr` se toma de la capa de estrategia si no se pasa
     explicito -- pasarlo sirve para replay y para los baselines, que deben
     correr contra un umbral fijo y no contra lo que tier2 haya publicado.
+
+    `dropoff_demand_weight` existe por la misma razon: la fila de diagnostico
+    `GreedyRateSafe` necesita correr con peso 0 y antes lo conseguia mutando
+    la constante del modulo con un try/finally. Funcionaba en el arnes
+    monohilo y era una bomba de relojeria en cuanto algo corriera en paralelo:
+    dos politicas a la vez leerian el peso de la otra. Un parametro no tiene
+    ese problema.
     """
     gross_pay_mxn = base_pay_mxn * surge_multiplier + est_tip_mxn
 
@@ -126,9 +142,8 @@ def evaluate_economics(
     )
 
     demand = dropoff_demand_score(zone_dropoff)
-    adjusted_rate_mxn_hr = raw_rate_mxn_hr * (
-        1.0 + DROPOFF_DEMAND_WEIGHT * (demand - NEUTRAL_DEMAND_SCORE)
-    )
+    peso = DROPOFF_DEMAND_WEIGHT if dropoff_demand_weight is None else dropoff_demand_weight
+    adjusted_rate_mxn_hr = raw_rate_mxn_hr * (1.0 + peso * (demand - NEUTRAL_DEMAND_SCORE))
 
     if reservation_wage_mxn_hr is None:
         # Lectura de atributo: sin lock, sin red, sin posibilidad de fallar.

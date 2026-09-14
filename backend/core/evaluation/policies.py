@@ -57,18 +57,24 @@ from core.agent.strategy import DEFAULT_RESERVATION_WAGE_MXN_HR
 # jueces hacen por escrito.
 
 #: HighestPay acepta si el bruto (tarifa*surge + propina) llega a esto.
-HIGHEST_PAY_MIN_MXN = 170.0
+HIGHEST_PAY_MIN_MXN = 180.0
 
-#: NearestFirst acepta si el traslado en vacio no pasa de esto. El barrido dio
-#: el mismo resultado para 1, 2 y 3 km: en este mapa de 4 zonas casi no hay
-#: traslados intermedios, asi que el umbral separa "misma zona" de "otra zona".
-NEAREST_FIRST_MAX_DEADHEAD_KM = 1.0
+#: NearestFirst acepta si el traslado en vacio no pasa de esto.
+#:
+#: Subio de 1.0 a 6.0 al pasar el ZoneMap de 4 a 16 zonas, y el cambio dice
+#: algo del mapa viejo: con 4 zonas casi no habia traslados intermedios, asi
+#: que el umbral solo separaba "misma zona" de "otra zona" y 1, 2 o 3 km daban
+#: identico. Con 16 zonas hay un gradiente real de distancias y el barrido
+#: distingue de verdad.
+NEAREST_FIRST_MAX_DEADHEAD_KM = 6.0
 
 #: GreedyRate acepta si la tasa cruda llega a esto. Coincide con el umbral del
 #: agente, y no por casualidad: el barrido dio el mismo optimo para los dos.
 #: Eso es lo que permite que la comparacion entre las dos filas aisle lo que
 #: aportan la seguridad y el valor de la zona, y no una calibracion distinta.
-GREEDY_RATE_MIN_MXN_HR = 400.0
+#: Siguen coincidiendo tras recalibrar con 16 zonas (los dos bajaron de 400 a
+#: 275 por separado), asi que la resta entre filas sigue significando lo mismo.
+GREEDY_RATE_MIN_MXN_HR = 225.0
 
 
 @dataclass(frozen=True)
@@ -200,91 +206,73 @@ class GreedyRate:
 class OurAgent:
     """El sistema real: gate de seguridad + economia, en ese orden.
 
-    Mismo codigo que `POST /decide`. `reservation_wage_mxn_hr` se fija
-    explicito en vez de leerlo de `STRATEGY`, por dos razones: el arnes no
-    tiene capa tier2 corriendo, y una corrida de resultados tiene que ser
-    reproducible -- si el umbral dependiera de lo que un modelo publico a
-    media corrida, dos ejecuciones del mismo seed podrian no coincidir.
+    **No reimplementa la decision: llama a la del endpoint.** Es la unica forma
+    de que la tabla de resultados describa el sistema que los jueces van a
+    probar. Tener aqui una copia "equivalente" ya costo caro una vez: mientras
+    la tenia, esta politica ignoraba el efecto de los shocks sobre el tiempo y
+    la distancia, asi que el arnes medía un agente que no existia -- y fue el
+    diff de replay quien lo delato, no una revision del codigo.
+
+    `reservation_wage_mxn_hr` se fija explicito en vez de leerlo de `STRATEGY`
+    por dos razones: el arnes no tiene capa tier2 corriendo, y una corrida de
+    resultados tiene que ser reproducible -- si el umbral dependiera de lo que
+    un modelo publico a media corrida, dos ejecuciones del mismo seed podrian
+    no coincidir.
     """
 
     name = "OurAgent"
 
-    def __init__(self, reservation_wage_mxn_hr: float | None = None) -> None:
+    def __init__(
+        self,
+        reservation_wage_mxn_hr: float | None = None,
+        dropoff_demand_weight: float | None = None,
+    ) -> None:
         self.reservation_wage_mxn_hr = (
             reservation_wage_mxn_hr
             if reservation_wage_mxn_hr is not None
             else DEFAULT_RESERVATION_WAGE_MXN_HR
         )
+        #: None = usar el peso calibrado del modulo. Explicito solo para la
+        #: fila de diagnostico, que corre con 0.
+        self.dropoff_demand_weight = dropoff_demand_weight
 
-    def decide(self, request, runner, state, sim_time) -> bool:
-        total_min, _, _ = runner.order_timing(request, state, sim_time)
+    def decide(self, request, runner, state, sim_time) -> PolicyDecision:
+        """`record=False` porque el arnes corre decenas de miles de decisiones
+        de calibracion y no tiene por que llenar la bitacora de
+        explain_decision con ellas."""
+        from api.decide import decide_request
 
-        verdict = evaluate_safety_full(
-            vehicle=request.vehicle,
-            weight_kg=request.weight_kg,
-            volume_liters=request.volume_liters,
-            sim_time=sim_time,
-            zone_dropoff=request.zone_dropoff,
-            continuous_riding_min=state.continuous_riding_min,
-            order_total_time_min=total_min,
-            shift_end_time=runner.config.shift_end_time,
-            in_flight_weight_kg=sum(o["weight_kg"] for o in state.in_flight),
-            in_flight_volume_liters=sum(o["volume_liters"] for o in state.in_flight),
-            last_break_end_time=state.last_break_end_time,
-            queue_offset_min=runner.queue_offset_min(state, sim_time),
-        )
-
-        economics = evaluate_economics(
-            base_pay_mxn=request.base_pay_mxn,
-            est_tip_mxn=request.est_tip_mxn,
-            surge_multiplier=request.surge_multiplier,
-            total_time_min=total_min,
-            deadhead_km=request.distance_pickup_km,
-            delivery_km=request.distance_delivery_km,
-            profile=runner.config.profile,
-            zone_dropoff=request.zone_dropoff,
+        response = decide_request(
+            request,
             reservation_wage_mxn_hr=self.reservation_wage_mxn_hr,
+            dropoff_demand_weight=self.dropoff_demand_weight,
+            record=False,
         )
-
-        economic_accept = economics.adjusted_rate_mxn_hr >= economics.reservation_wage_mxn_hr
-        decision, reason, binding = combine(
-            verdict,
-            economic_accept=economic_accept,
-            economic_reason=(
-                reasons.accepted(economics.adjusted_rate_mxn_hr, economics.reservation_wage_mxn_hr)
-                if economic_accept
-                else reasons.reservation_wage(
-                    economics.adjusted_rate_mxn_hr,
-                    economics.reservation_wage_mxn_hr,
-                    economics.deadhead_km,
-                )
-            ),
-            economic_binding=None if economic_accept else "reservation_wage",
+        return PolicyDecision(
+            response.decision == "ACCEPT", response.reason, response.binding_constraint
         )
-        return PolicyDecision(decision == "ACCEPT", reason, binding)
 
 
 class GreedyRateSafe(OurAgent):
-    """Fila de diagnostico: GreedyRate + gate de seguridad, sin valor de zona.
+    """Fila de diagnostico: nuestro agente con el gate de seguridad y SIN el
+    valor de la zona de dropoff.
 
-    No es un baseline del template: es el eslabon que hace legible la tabla.
+    No es un baseline del template: es el eslabon que hace legible el resto.
     Entre `GreedyRate` y esta fila la unica diferencia es la seguridad, y entre
-    esta y `OurAgent` la unica diferencia es el valor de la zona de dropoff. Con
-    las tres juntas, "¿por que ganan menos que el baseline?" se contesta con
-    dos restas en vez de con una explicacion.
+    esta y `OurAgent` la unica diferencia es el posicionamiento. Con las tres
+    juntas, "¿por que ganan lo mismo que un agente que ignora la seguridad?" se
+    contesta con dos restas en vez de con una explicacion.
+
+    El peso cero se pasa como PARAMETRO. La version anterior mutaba
+    `economics.DROPOFF_DEMAND_WEIGHT` dentro de `decide()` con un try/finally:
+    funcionaba en el arnes monohilo y se rompia en cuanto dos politicas
+    corrieran a la vez, porque cada una leeria el peso de la otra.
     """
 
     name = "GreedyRateSafe"
 
-    def decide(self, request, runner, state, sim_time) -> PolicyDecision:
-        import core.agent.economics as eco
-
-        anterior = eco.DROPOFF_DEMAND_WEIGHT
-        eco.DROPOFF_DEMAND_WEIGHT = 0.0
-        try:
-            return super().decide(request, runner, state, sim_time)
-        finally:
-            eco.DROPOFF_DEMAND_WEIGHT = anterior
+    def __init__(self, reservation_wage_mxn_hr: float | None = None) -> None:
+        super().__init__(reservation_wage_mxn_hr, dropoff_demand_weight=0.0)
 
 
 # ==========================================================================

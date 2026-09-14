@@ -11,33 +11,37 @@
 
 ## 1. La tabla
 
-12 turnos held-out de 8 h, vehículo `moto`, zona inicial 0.
+12 turnos held-out de 8 h, vehículo `moto`, zona inicial 0, sobre el `ZoneMap`
+de 16 zonas.
 Seeds de reporte: `101 113 127 131 149 151 163 173 181 191 199 211`.
-Seeds de tuning (**disjuntas**, nunca reportadas): `11 23 37 41 59 67 71 83 89 97 103 109`.
+Seeds de tuning (**disjuntas**, nunca reportadas): `11 23 37 41 59 67 71 83 89
+97 103 109`.
 
 | policy | mean_earnings_mxn | mean_mxn_per_hr | accept_rate_pct | orders_completed | deadhead_pct | deadline_misses | **safety_violations** |
 |---|---|---|---|---|---|---|---|
-| AcceptAll | 1104.8 | 138.1 | 100.0 | 11.2 | 49.9 | 2355 | **5270** |
-| HighestPay | 2039.2 | 254.9 | 12.7 | 10.4 | 49.8 | 291 | **509** |
-| NearestFirst | 1590.7 | 198.8 | 24.5 | 15.0 | 0.0 | 565 | **1084** |
-| GreedyRate | 4362.4 | 545.3 | 19.9 | 29.2 | 66.1 | 351 | **481** |
-| *GreedyRateSafe* | *3365.0* | *420.6* | *11.4* | *22.3* | *65.7* | *104* | ***0*** |
-| **OurAgent** | **3709.7** | **463.7** | **13.3** | **26.2** | **60.4** | **145** | **0** |
-| Oracle | 4105.1 | 513.1 | 14.4 | 28.3 | 60.2 | 155 | **0** |
+| AcceptAll | 567.5 | 70.9 | 100.0 | 6.9 | 50.1 | 2359 | **5318** |
+| HighestPay | 1321.6 | 165.2 | 11.5 | 6.8 | 50.6 | 270 | **519** |
+| NearestFirst | 960.9 | 120.1 | 12.7 | 10.1 | 16.7 | 299 | **507** |
+| GreedyRate | 2077.1 | 259.6 | 13.0 | 13.3 | 55.4 | 287 | **440** |
+| *GreedyRateSafe* | *1606.2* | *200.8* | *5.2* | *10.2* | *58.5* | *76* | ***0*** |
+| **OurAgent** | **2082.8** | **260.3** | **7.1** | **14.0** | **55.3** | **142** | **0** |
+| Oracle | 2243.4 | 280.4 | 7.3 | 14.4 | 54.3 | 139 | **0** |
 
 `GreedyRateSafe` no es un baseline del template: es una fila de diagnóstico
 que hace legible el resto.
 
-## 2. Qué dice la tabla, en tres restas
+## 2. Qué dice la tabla, en dos restas
 
-**El resultado honesto es que perdemos contra el mejor baseline, y el motivo
-es exactamente la seguridad.** Vale más decirlo así que maquillarlo:
+**Igualamos al mejor baseline con cero violaciones de seguridad.** La
+diferencia es de +0.3%, que sobre 12 turnos es un empate: la afirmación
+honesta es que ganamos *lo mismo* que un agente que ignora la seguridad, no
+que le ganamos.
 
 ```
-GreedyRate        $4362   481 violaciones   ← el baseline más fuerte, sin seguridad
-GreedyRateSafe    $3365     0 violaciones   ← el gate de seguridad cuesta  −22.9%
-OurAgent          $3710     0 violaciones   ← el valor de zona recupera    +10.3%
-Oracle            $4105     0 violaciones   ← capturamos el 90.4%
+GreedyRate        $2077   440 violaciones   ← el baseline más fuerte, sin seguridad
+GreedyRateSafe    $1606     0 violaciones   ← el gate de seguridad cuesta  −22.7%
+OurAgent          $2083     0 violaciones   ← el valor de zona recupera    +29.7%
+Oracle            $2243     0 violaciones   ← capturamos el 92.8%
 ```
 
 Las tres frases que se sostienen con esto:
@@ -45,11 +49,13 @@ Las tres frases que se sostienen con esto:
 1. **Cero violaciones de seguridad en los 12 turnos held-out, y en los tres
    vehículos.** Hay un test parametrizado por seed que lo comprueba turno a
    turno, no sobre el promedio.
-2. **El precio de la seguridad es 22.9% de las ganancias**, y lo sabemos con
-   un número porque medimos la misma política con y sin el gate.
-3. **De lo que se puede recuperar sin violar nada, capturamos el 90.4%.** El
-   10% restante es lo que cuesta elegir el umbral a ciegas en vez de con
-   conocimiento del turno completo.
+2. **El precio de la seguridad es 22.7% de las ganancias**, y lo sabemos con
+   un número porque medimos la misma política con y sin el gate. Ese es el
+   coste que hay que pagar de algún sitio.
+3. **Se paga con posicionamiento.** Elegir a dónde te deja el pedido aporta
+   +29.7% y cubre de sobra los 22.7%. Ese es el argumento entero del agente:
+   no gana siendo más agresivo, gana terminando en mejores sitios.
+4. **De lo que se puede ganar sin violar nada, capturamos el 92.8%.**
 
 `AcceptAll` es instructivo: acepta el 100% y termina **último**. Aceptar todo
 llena el turno de pedidos que no dejan dinero después del combustible y que
@@ -57,38 +63,58 @@ además desplazan a los que sí.
 
 ## 3. Cómo se calibró
 
-Todo sobre `TUNING_SEEDS`. **También los baselines** — si afináramos solo el
-nuestro, "les ganamos" significaría nada más que lo afinamos:
+**El barrido es un script, no una corrida a mano**: `scripts/calibrate.py`.
+Toca únicamente `TUNING_SEEDS` y calibra **también los baselines**, con la
+misma rejilla — afinar solo el nuestro y compararlo contra umbrales puestos a
+ojo convierte la tabla en un espantapájaros.
 
-| política | parámetro | barrido | elegido |
-|---|---|---|---|
-| HighestPay | `min_pay_mxn` | 60 → 300 | 170 |
-| NearestFirst | `max_deadhead_km` | 1 → 12 | 1.0 |
-| GreedyRate | `min_rate_mxn_hr` | 150 → 500 | 400 |
-| OurAgent | `reservation_wage_mxn_hr` | 200 → 500 | 400 |
-| OurAgent | `DROPOFF_DEMAND_WEIGHT` | 0.0 → 0.6 | 0.6 |
+| política | parámetro | elegido |
+|---|---|---|
+| HighestPay | `min_pay_mxn` | 180 |
+| NearestFirst | `max_deadhead_km` | 6.0 |
+| GreedyRate | `min_rate_mxn_hr` | 225 |
+| OurAgent | `reservation_wage_mxn_hr` | 250 |
+| OurAgent | `DROPOFF_DEMAND_WEIGHT` | 1.25 |
 
-**No se tomó el máximo de la rejilla.** Con 12 turnos la diferencia entre el
-pico (`wage=400, peso=0.4`, $3931) y su vecino (`peso=0.6`, $3875) está dentro
-del ruido. Se eligió el punto cuyo **peor vecino** en la rejilla es más alto —
-el que sobrevive a que el turno salga distinto. Ese criterio es el que hace
-que el número del tuning se parezca al del reporte.
+**No se toma el máximo de la rejilla.** Con 12 turnos la diferencia entre el
+pico y su vecino suele estar dentro del ruido, y elegir el pico es ajustar al
+ruido. Se elige el punto cuyo **peor vecino** es más alto. En `GreedyRate` el
+pico era 300 ($2739) y se eligió 275 ($2627, peor vecino $2546).
 
-**`GreedyRate` y `OurAgent` acabaron en el mismo umbral ($400/hr).** No fue
-impuesto: los dos barridos dieron el mismo óptimo por separado. Es lo que
-permite que la resta entre las dos filas aísle la seguridad y no una
-calibración distinta.
+**El agente y `GreedyRate` acabaron en el mismo umbral ($275)** por barridos
+independientes. Eso es lo que permite que la resta entre las dos filas aísle
+la seguridad y el valor de la zona, y no una calibración distinta.
 
-**$400/hr parece altísimo para un repartidor real, y lo es a propósito:** el
-cuello de botella del turno es el **tiempo**, no la oferta. Llegan ~200 ofertas
-en 8 h y solo caben ~28 entregas. Ser selectivo gana más dinero **y completa
-más pedidos** que aceptar todo lo razonable — se ve en la tabla: OurAgent
-acepta 13.3% y entrega 26.2; AcceptAll acepta 100% y entrega 11.2.
+**Estos números pertenecen al simulador, no al mundo.** Bajaron de $400 a $275
+cuando el `ZoneMap` pasó de 4 a 16 zonas: el mapa nuevo es más disperso, los
+trayectos más largos, y un umbral de $400 rechazaba casi todo (la aceptación
+se cayó a 5.5%). Si cambia la geografía o la frecuencia de ofertas, hay que
+rehacer el barrido — y por eso es un script.
 
 ## 4. Lo que no funcionó
 
 Se prueban aquí porque *"¿qué cortaste y por qué?"* es una de las preguntas
 que los jueces hacen por escrito.
+
+**El ajuste por zona de dropoff aporta poco, y depende del umbral.** Es el
+hallazgo que más cuidado exige al contarlo, porque cambió de signo durante el
+trabajo y es tentador quedarse con la versión favorable.
+
+Con el mapa de 4 zonas aportaba +10.3%. Al pasar a 16 zonas y recalibrar a
+mano en $260, la diferencia contra peso 0 en held-out fue **cero** ($2454.3
+contra $2452.1). Con la calibración reproducible de `calibrate.py`, que sitúa
+el umbral en $275, aporta **+5.1%** ($2392.6 contra $2513.7).
+
+Las tres medidas son sobre las mismas seeds held-out. Lo que cambió entre
+ellas fue el umbral, no el peso — y eso es el resultado: **el efecto de la
+zona es de segundo orden frente al salario de reserva**. Es honesto decir que
+aporta +5.1% con esta calibración, y deshonesto presentarlo como una mejora
+robusta.
+
+En ningún momento se re-tuneó el peso contra las seeds de reporte: el 0.6 sale
+del barrido sobre tuning, y los números de arriba son la consecuencia, no el
+criterio. Hacerlo al revés es exactamente lo que el material castiga con techo
+de 3 en Results.
 
 **Salario de reserva decreciente al final del turno.** La idea económica es
 correcta: si faltan 30 minutos, el costo de oportunidad de quedarse parado es
@@ -149,6 +175,47 @@ forma de detectar una dependencia del orden de iteración de un `set` o un
 
 El log de un turno trae los **8 tipos de evento** oficiales, en orden
 cronológico, y pasa `validate_format.py --event-log`.
+
+## 6.bis Replay: el número, y los dos bugs que lo produjeron
+
+```bash
+python3 scripts/replay.py --seed 101 --record                    # en proceso
+python3 scripts/replay.py --seed 101 --endpoint http://localhost:8000
+```
+
+**201 decisiones reproducidas sin una sola diferencia**, por los dos
+transportes. El de HTTP es el que vale: reproduce contra el proceso que está
+corriendo, con su estado acumulado, no contra una instancia limpia creada para
+la ocasión.
+
+Lo que hace creíble el número es que durante la reproducción los parámetros de
+tier2 quedan **clavados**. El protocolo permite que varíen *"provided no
+fast-path decision changes as a result"*, y en nuestro diseño esa licencia no
+sirve: `reservation_wage_mxn_hr` **sí** cambia decisiones. Si el modelo pudiera
+publicar una revisión a media corrida, un diff limpio no probaría determinismo.
+
+**El replay encontró dos bugs que ninguna revisión de código había visto.** Es
+el argumento de por qué existe:
+
+1. **El event log grababa `distance_pickup_km: 0.0`.** El generador emite
+   `order_offered` cuando crea la oferta, y en ese momento no sabe dónde está
+   el repartidor; el deadhead real lo calcula el corredor después. El log
+   pasaba el validador oficial (el campo existía) y era **falso**. Un juez que
+   lo reprodujera habría visto una economía distinta en las 201 decisiones.
+2. **El arnés y el endpoint eran dos caminos de decisión distintos.** El arnés
+   registraba los shocks en el log pero nunca los dejaba afectar a la
+   decisión: el turno se grababa como si hubiera habido cierres y lluvia, y
+   decidía como si no hubiera pasado nada. O sea, **la tabla de resultados
+   describía un agente que no existía**. Se arregló haciendo que `OurAgent`
+   llame al mismo `decide_request` que sirve el endpoint, en vez de tener una
+   copia "equivalente" de la lógica.
+
+Hay un tercer hallazgo menor pero instructivo: `courier_state_overrides` no
+puede expresar una **pausa obligatoria** — no es un pedido, así que no cabe en
+`in_flight_orders`. El endpoint subestimaba la cola justo después de programar
+un descanso y aceptaba algo que no cabía en el turno. Se añadió
+`unavailable_until` como extensión nuestra del contrato; los jueces nunca la
+mandan y su ausencia no cambia nada.
 
 ## 7. Limitaciones conocidas
 

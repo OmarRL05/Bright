@@ -22,6 +22,7 @@ from core.agent.journal import (
     in_flight_totals,
     latest_in_flight_eta,
     queue_offset_min,
+    to_dashboard_decision_event,
     to_decision_event,
     to_order_offered_event,
 )
@@ -376,3 +377,27 @@ class TestEventLog:
         )
         assert resultado.returncode == 0, resultado.stdout + resultado.stderr
         assert "PASS" in resultado.stdout
+
+
+# ==========================================================================
+# to_dashboard_decision_event -- GET /decisions para el mapa (Bloque 6)
+# ==========================================================================
+
+
+class TestDashboardDecisionEvent:
+    def test_incluye_zonas_para_dibujar_la_ruta(self):
+        journal = DecisionJournal()
+        record = decide_and_record(
+            journal, make_request(zone_pickup=4, zone_dropoff=9)
+        )
+        event = to_dashboard_decision_event(record)
+        assert event["zone_pickup"] == 4
+        assert event["zone_dropoff"] == 9
+
+    def test_no_contamina_el_evento_oficial(self):
+        """zone_pickup/zone_dropoff son propios del dashboard -- el evento
+        `decision` que va al event log oficial no debe traerlos."""
+        journal = DecisionJournal()
+        record = decide_and_record(journal, make_request())
+        assert "zone_pickup" not in to_decision_event(record)
+        assert "zone_dropoff" not in to_decision_event(record)

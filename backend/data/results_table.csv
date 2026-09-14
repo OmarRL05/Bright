@@ -1,0 +1,17 @@
+# Results criterion, Courier.
+# Seeds de REPORTE (held-out, no se calibro con ellas): [101, 113, 127, 131, 149, 151, 163, 173, 181, 191, 199, 211]
+# Seeds de TUNING (se calibro con ellas, NO se reportan): [11, 23, 37, 41, 59, 67, 71, 83, 89, 97, 103, 109]
+# 12 turnos de 8.0 h, vehiculo moto, zona inicial 0.
+# Ganancias contadas AL ENTREGAR y netas de combustible (cost_per_km del perfil).
+# Los baselines no consultan el gate de seguridad; las violaciones se miden por fuera,
+# sobre lo que cada politica acepto. Por eso la columna no es cero en sus filas.
+# Oracle = agente clarividente y goloso con las mismas constraints de seguridad:
+# cota superior de esta familia de politicas, no un optimo demostrado.
+policy,mean_earnings_mxn,median_earnings_mxn,mean_mxn_per_hr,accept_rate_pct,orders_completed,deadhead_pct_of_km,deadline_misses,safety_violations
+AcceptAll,567.5,569.7,70.9,100.0,6.9,50.1,2359,5318
+HighestPay,1321.6,1423.0,165.2,11.5,6.8,50.6,270,519
+NearestFirst,960.9,967.1,120.1,12.7,10.1,16.7,299,507
+GreedyRate,2077.1,2117.9,259.6,13.0,13.3,55.4,287,440
+GreedyRateSafe,1606.2,1740.2,200.8,5.2,10.2,58.5,76,0
+OurAgent,2082.8,2124.4,260.3,7.1,14.0,55.3,142,0
+Oracle,2243.4,2148.4,280.4,7.3,14.4,54.3,139,0

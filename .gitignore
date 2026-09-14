@@ -24,6 +24,14 @@ yarn-error.log*
 # --- Datasets pesados (ver backend/data/README.md) ---
 backend/data/*.graphml
 backend/data/*.csv
+# La tabla de resultados SI se commitea (1.2 KB): es la evidencia del criterio
+# de Results, la sirve GET /results y el dashboard la dibuja, asi que tiene que
+# existir en un clon limpio sin correr la evaluacion antes.
+!backend/data/results_table.csv
+# Descargas crudas de OSMnx/Overpass (53 MB y creciendo). Se regeneran solas;
+# lo unico que hace falta conservar es data/route_cache.json, que pesa 263 KB
+# y SI se commitea a proposito -- ver core/routing/osrm.py.
+backend/data/cache/
 
 # --- OS / editor ---
 .DS_Store
@@ -32,3 +40,4 @@ backend/data/*.csv
 *.swp
 backend/.venv/
 backend/out/
+backend/logs/

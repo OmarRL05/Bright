@@ -44,7 +44,7 @@ import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Iterator, Protocol
+from typing import Any, Protocol
 
 from core.agent.safety import SafetyVerdict
 
@@ -138,8 +138,12 @@ def latest_in_flight_eta(in_flight_orders: Any) -> datetime | None:
     return max(etas) if etas else None
 
 
-def queue_offset_min(in_flight_orders: Any, sim_time: datetime | None) -> float:
-    """Minutos que falta para terminar lo ya aceptado.
+def queue_offset_min(
+    in_flight_orders: Any,
+    sim_time: datetime | None,
+    unavailable_until: datetime | None = None,
+) -> float:
+    """Minutos que falta para que el repartidor quede libre.
 
     Es lo que hace que la constraint de fin de turno vea la RUTA COMBINADA y no
     solo el pedido suelto -- la categoria de sondeo "Stacking and route
@@ -147,10 +151,11 @@ def queue_offset_min(in_flight_orders: Any, sim_time: datetime | None) -> float:
     """
     if sim_time is None:
         return 0.0
-    latest = latest_in_flight_eta(in_flight_orders)
-    if latest is None:
+
+    momentos = [m for m in (latest_in_flight_eta(in_flight_orders), unavailable_until) if m]
+    if not momentos:
         return 0.0
-    return max(0.0, (latest - sim_time).total_seconds() / 60.0)
+    return max(0.0, (max(momentos) - sim_time).total_seconds() / 60.0)
 
 
 # ==========================================================================
@@ -175,6 +180,10 @@ class DecisionRecord:
     economics: dict[str, Any] | None = None
     #: Parametros de estrategia vigentes (tier2). Los llena strategy.py.
     strategy: dict[str, Any] | None = None
+    #: Shocks vigentes al decidir y como movieron los numeros (core.agent.shocks).
+    #: Es lo que contesta "¿por que esta oferta si y la de hace un minuto no?"
+    #: despues de que un juez inyecto un surge en vivo.
+    shocks: dict[str, Any] | None = None
 
     @property
     def order_id(self) -> str:
@@ -250,17 +259,6 @@ class DecisionJournal:
 
     # -- salida al event log JSONL (Bloque 1, P1.1) -------------------------
 
-    def decision_events(self) -> Iterator[dict[str, Any]]:
-        """Un evento `decision` por registro, en orden cronologico."""
-        for record in self.all_records():
-            yield to_decision_event(record)
-
-
-# ==========================================================================
-# Renderizado. Funciones libres: se pueden usar sin instanciar el journal, y
-# se testean sin construir uno.
-# ==========================================================================
-
 
 def to_decision_event(record: DecisionRecord) -> dict[str, Any]:
     """Evento `decision` del event log (event_log_schema.json).
@@ -281,6 +279,22 @@ def to_decision_event(record: DecisionRecord) -> dict[str, Any]:
         "tier": record.tier,
         "degraded": record.degraded,
     }
+
+
+def to_dashboard_decision_event(record: DecisionRecord) -> dict[str, Any]:
+    """`to_decision_event` + zona -- SOLO para GET /decisions (el feed del
+    dashboard), nunca para el event log oficial.
+
+    `zone_pickup`/`zone_dropoff` no son parte del evento `decision` de
+    event_log_schema.json (esos viven en `order_offered`, aparte) -- se
+    agregan aqui, no en `to_decision_event`, para no meterle campos de mas a
+    la exportacion oficial. El dashboard los necesita para poder dibujar la
+    ruta en el mapa sin tener que reconstruirla desde un JSONL.
+    """
+    event = to_decision_event(record)
+    event["zone_pickup"] = _get(record.order, "zone_pickup")
+    event["zone_dropoff"] = _get(record.order, "zone_dropoff")
+    return event
 
 
 def to_order_offered_event(record: DecisionRecord) -> dict[str, Any]:
@@ -345,9 +359,35 @@ def _inputs(record: DecisionRecord) -> dict[str, Any]:
     weight, volume = in_flight_totals(in_flight)
     continuous = float(_get(overrides, "continuous_riding_min", 0.0) or 0.0)
 
+    from core.agent.economics import dropoff_demand_score
+
+    zone_pickup = _get(order, "zone_pickup")
+    zone_dropoff = _get(order, "zone_dropoff")
+
     return {
         "sim_time": _iso(sim_time),
-        "position_zone": _get(overrides, "current_zone", _get(order, "zone_pickup")),
+        "position_zone": _get(overrides, "current_zone", zone_pickup),
+        # Un juez puede mandar cualquier entero de zona: "you build your own
+        # data" no significa que conozcamos su universo de zonas. Cuando no la
+        # conocemos, la demanda se asume neutral -- y eso queda escrito aqui en
+        # vez de ser un supuesto invisible dentro de la aritmetica.
+        #
+        # Las tres banderas, y no una: `zone_known` a secas es ambiguo (¿la de
+        # recogida o la de entrega?) y esa ambiguedad ya costo un test. Aqui
+        # `zone_known` significa "conocemos LAS DOS"; las otras dos dicen cual
+        # falla. La demanda se toma de la zona de DROPOFF, que es la que
+        # importa para "donde te deja el pedido".
+        "zone_known": (
+            safety.zone_is_known(zone_pickup) and safety.zone_is_known(zone_dropoff)
+        ),
+        "zone_pickup_known": safety.zone_is_known(zone_pickup),
+        "zone_dropoff_known": safety.zone_is_known(zone_dropoff),
+        # Dos scores con nombre, no un `demand_score` a secas: la economia usa
+        # el de DROPOFF (donde te deja el pedido, que es la categoria de sondeo
+        # "Dropoff location value"), y el de pickup se publica porque es el que
+        # explica de donde salio la oferta. Confundirlos cambia el numero.
+        "dropoff_demand_score": dropoff_demand_score(zone_dropoff),
+        "pickup_demand_score": dropoff_demand_score(zone_pickup),
         "vehicle": _get(order, "vehicle"),
         "vehicle_profile": {
             "avg_speed_kmh": profile.avg_speed_kmh,
@@ -393,6 +433,7 @@ def _inputs(record: DecisionRecord) -> dict[str, Any]:
             "shift_end_safety_margin_min": safety.SHIFT_END_SAFETY_MARGIN_MIN,
         },
         "strategy": record.strategy,
+        "shocks": record.shocks,
         "economics": record.economics,
         "latency_ms": round(record.latency_ms, 3),
         "tier": record.tier,

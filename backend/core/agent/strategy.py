@@ -23,7 +23,7 @@ puede, y cuando no puede, lo que ya estaba publicado sigue sirviendo.
       sin lock                          ^
       sin red                           | reemplazo atomico del objeto
       sin esperas                       |
-                                      ClaudeAdvisor.propose()  (puede fallar)
+                                      GeminiAdvisor.propose()  (puede fallar)
 
 Cuatro invariantes, y como cada una esta garantizada
 ----------------------------------------------------
@@ -50,11 +50,10 @@ publicarse. Tier2 aconseja; no manda.
 Sobre la credencial: hay que leerla en cada llamada
 ----------------------------------------------------
 Los jueces invalidan la credencial **en el entorno del proceso, a media
-corrida**. Un `anthropic.Anthropic()` construido al importar el modulo se queda
-con la key vieja en memoria y seguiria funcionando: el ensayo saldria bien y la
-demo real fallaria. Por eso `ClaudeAdvisor` construye el cliente **dentro de
-cada llamada**, leyendo `os.environ` en ese momento. Es la diferencia entre
-haber implementado el requisito y haberlo simulado.
+corrida**. Un cliente construido al importar el modulo se queda con la clave
+vieja en memoria y seguiria funcionando: el ensayo saldria bien y la demo real
+fallaria. Por eso `GeminiAdvisor` lee `os.environ` **dentro de cada llamada**.
+Es la diferencia entre haber implementado el requisito y haberlo simulado.
 
 Replay
 ------
@@ -69,6 +68,8 @@ from __future__ import annotations
 import json
 import os
 import threading
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Literal, Protocol
@@ -91,10 +92,41 @@ from core.agent import reasons
 #: el cuello de botella del turno es el TIEMPO, no la oferta. Con ~200 ofertas
 #: en 8 horas y media hora por entrega, solo caben unas 25; ser selectivo gana
 #: mas dinero Y completa mas pedidos que aceptar todo lo razonable.
-DEFAULT_RESERVATION_WAGE_MXN_HR = 400.0
+#:
+#: Bajo de 400 a 275 al ampliar el ZoneMap de 4 a 16 zonas (Persona 1): el mapa
+#: nuevo es mas disperso, los trayectos son mas largos y la misma oferta rinde
+#: menos MXN/hr, asi que un umbral de 400 rechazaba casi todo (la tasa de
+#: aceptacion se cayo a 5.5%). Es el ejemplo de por que la calibracion no
+#: sobrevive a un cambio del mundo simulado: hay que rehacer el barrido.
+#:
+#: El valor sale de `scripts/calibrate.py`, que hace el barrido de forma
+#: reproducible y aplica el criterio del peor vecino en vez del pico -- no de
+#: una corrida a mano que nadie pueda repetir.
+#:
+#: Bajo de 275 a 250 al aplicar el factor de rodeo a las distancias: con
+#: trayectos un 35% mas largos, la misma oferta rinde menos MXN/hr y el umbral
+#: que maximiza el turno baja con ella.
+DEFAULT_RESERVATION_WAGE_MXN_HR = 250.0
 
+#: Cotas ABSOLUTAS: el ultimo cinturon, no el principal.
 MIN_RESERVATION_WAGE_MXN_HR = 60.0
 MAX_RESERVATION_WAGE_MXN_HR = 600.0
+
+#: Cuanto puede mover tier2 el umbral calibrado, en tanto por uno.
+#:
+#: Esto es el cinturon que de verdad protege. Las cotas absolutas de arriba
+#: dejaban pasar cualquier cosa entre 60 y 600, y el modelo -- que no ha visto
+#: los 12 turnos de calibracion -- propuso 120 con la justificacion de que
+#: "elevamos el salario de reserva". Su prosa decia subir y su numero bajaba a
+#: menos de la mitad; segun nuestro propio barrido eso cuesta cerca de un 30%
+#: de las ganancias del turno, con `degraded: false` y todo en verde.
+#:
+#: El reparto correcto es: el OPTIMO sale de medir 12 turnos held-out, y tier2
+#: solo lo modula por condiciones que la calibracion no puede conocer -- un
+#: surge en curso, lluvia, la hora. Con [0.75, 1.30] puede apretar o aflojar
+#: de verdad y no puede tirar el turno.
+MIN_STRATEGY_MULTIPLIER = 0.75
+MAX_STRATEGY_MULTIPLIER = 1.30
 
 #: Cada cuanto tiempo **de simulacion** se vuelve a consultar al modelo. En
 #: minutos de sim, no de reloj de pared: asi la cadencia de refresco es la
@@ -104,11 +136,31 @@ REFRESH_INTERVAL_SIM_MIN = 20.0
 #: Techo duro de la llamada al modelo. Corre en un hilo de fondo, pero un hilo
 #: colgado para siempre es una fuga: si no contesta en este tiempo, se trata
 #: como caida y se entra en degradado.
-MODEL_TIMEOUT_SECONDS = 15.0
+#:
+#: 30 y no 15 por medicion, no por cautela: la misma peticion tarda entre 2.7 y
+#: 21 segundos segun la carga del servicio. Con el techo en 15 caiamos en
+#: `TimeoutError` la mitad de las veces y el sistema se reportaba degradado sin
+#: estarlo. Un timeout corto acelera la señal de degradado, pero uno POR DEBAJO
+#: de la latencia real del modelo no la acelera: la vuelve mentira.
+MODEL_TIMEOUT_SECONDS = 30.0
 
 #: Modelo de la capa de estrategia. Nunca se llama dentro de la ventana de
 #: decision -- ver el docstring del modulo.
-MODEL_ID = "claude-opus-5"
+#: `gemini-flash-latest` devolvia HTTP 503 ("high demand") de forma sostenida
+#: y `gemini-2.5-flash` responde 404 para este proyecto aunque aparezca en la
+#: lista de modelos. Este contesta.
+MODEL_ID = "gemini-3.8-flash"
+
+#: Endpoint de la API de Gemini. La clave viaja en la cabecera
+#: `X-goog-api-key`, no en la URL: en la URL acabaria en los logs de acceso de
+#: cualquier proxy por el que pase.
+GEMINI_ENDPOINT = (
+    "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+)
+
+#: Variable de entorno con la credencial. Es lo que los jueces invalidan a
+#: media corrida para probar el requisito 7, asi que se lee en CADA llamada.
+GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
 
 Confidence = Literal["low", "medium", "high"]
 ParamsSource = Literal["bootstrap", "model", "recorded"]
@@ -162,6 +214,13 @@ class StrategyStatus:
 
 
 class ModelAdvisor(Protocol):
+    #: False cuando no hay ningun modelo detras. Un advisor no disponible no
+    #: se consulta, y por lo tanto **no puede degradar la capa**: "no hay
+    #: modelo configurado" y "el modelo se cayo" son estados distintos y el
+    #: protocolo solo puntua el segundo. Quien no declare el atributo se
+    #: asume disponible.
+    available: bool
+
     def propose(self, context: dict[str, Any]) -> ModelProposal:
         """Propone parametros. Lanza si el modelo no esta disponible."""
         ...
@@ -182,6 +241,7 @@ class NullAdvisor:
     """
 
     name = "null"
+    available = False
 
     def propose(self, context: dict[str, Any]) -> ModelProposal:
         raise ModelUnavailable("no hay advisor configurado")
@@ -191,23 +251,37 @@ class ModelUnavailable(RuntimeError):
     """El modelo no esta disponible: sin key, sin red, timeout o respuesta ilegible."""
 
 
-class ClaudeAdvisor:
-    """Tier2 real contra la API de Claude, fuera de la ventana de decision.
+class GeminiAdvisor:
+    """Tier2 real contra la API de Gemini, fuera de la ventana de decision.
 
-    Tres decisiones que importan para el ensayo del protocolo (seccion 7):
+    Cuatro decisiones que importan, tres de ellas por el ensayo del requisito 7
+    del protocolo (caida del modelo a media corrida):
 
-    1. **El cliente se construye en cada llamada**, leyendo `os.environ` en ese
-       momento. Un cliente cacheado al importar sobreviviria a que los jueces
-       invaliden la credencial y el requisito quedaria sin demostrar.
-    2. **`max_retries=0` y timeout corto.** En background los reintentos serian
-       gratis, pero alargan el hueco entre la caida y la señal de degradado --
-       y esa señal es justo lo que se esta evaluando.
-    3. **El SDK se importa perezosamente.** Si `anthropic` no esta instalado en
-       la maquina de la demo, eso se comporta igual que un modelo inalcanzable:
-       degradado, no crash.
+    1. **La credencial se lee en CADA llamada**, no al construir el advisor.
+       Un cliente que la capture al arrancar sobreviviria a que los jueces la
+       invaliden en el entorno del proceso, y el requisito quedaria simulado en
+       vez de implementado.
+    2. **Sin reintentos y con timeout corto.** En un hilo de fondo los
+       reintentos serian gratis, pero alargan el hueco entre la caida y la
+       señal de degradado -- y esa señal es justo lo que se evalua.
+    3. **Todo fallo es el mismo evento.** Credencial invalida, sin red,
+       timeout, cuota agotada, respuesta ilegible: para esta capa todos
+       significan "el modelo no esta". El detalle exacto se conserva en
+       `status()` para poder diagnosticar en vivo, pero no cambia el
+       comportamiento.
+    4. **urllib de la biblioteca estandar, no el SDK de Google.** Es una sola
+       peticion JSON corta que ya corre con cero reintentos: el SDK no aporta
+       nada que aqui se use, y si una dependencia mas que puede faltar en la
+       maquina de la demo. Menos piezas que puedan fallar en el unico camino
+       cuyo fallo hay que demostrar en vivo.
+
+    `response_mime_type: application/json` hace que la API garantice JSON, asi
+    que no hay que limpiar vallas de markdown como con otros proveedores. Si
+    aun asi llega algo ilegible, se trata como caida y no como excepcion.
     """
 
-    name = "claude"
+    name = "gemini"
+    available = True
 
     def __init__(
         self,
@@ -217,56 +291,106 @@ class ClaudeAdvisor:
         self.model = model
         self.timeout_seconds = timeout_seconds
 
+    #: Se le pide un MULTIPLICADOR, no una cifra absoluta.
+    #:
+    #: Pidiendo el numero suelto, el modelo re-derivaba la economia entera sin
+    #: haber visto la calibracion, y su prosa podia contradecir su propio
+    #: numero sin que nada lo notara ("elevamos el umbral" mientras lo bajaba a
+    #: la mitad). Con un multiplicador, la unidad de la respuesta ES la
+    #: decision que se le pide -- subir, bajar o dejarlo igual -- y decir "1.15"
+    #: mientras se escribe "bajamos" es mucho mas dificil.
     _SYSTEM = (
-        "Eres la capa de estrategia de un agente repartidor. Ajustas el salario "
-        "de reserva (MXN/hora) que el motor de decision usa para aceptar o "
-        "rechazar pedidos. Nunca decides pedidos individuales.\n"
-        "Responde SOLO con un objeto JSON, sin texto alrededor, con las claves: "
-        '{"reservation_wage_mxn_hr": number, "target_zone": integer|null, '
-        '"reasoning": string de menos de 30 palabras, '
-        '"confidence": "low"|"medium"|"high"}'
+        "Eres la capa de estrategia de un agente repartidor en Monterrey. El "
+        "motor de decision ya tiene un salario de reserva CALIBRADO sobre 12 "
+        "turnos medidos; tu no lo reemplazas, solo lo ajustas por condiciones "
+        "que la calibracion no pudo conocer: surge en curso, lluvia, hora del "
+        "dia, como viene el turno. Nunca decides pedidos individuales.\n"
+        "Devuelve un multiplicador sobre ese umbral calibrado:\n"
+        "  >1 = mas exigente (hay buenas ofertas, conviene esperar)\n"
+        "  <1 = mas permisivo (escasean las ofertas, conviene aceptar mas)\n"
+        "  1  = sin cambio\n"
+        f"Limites: entre {MIN_STRATEGY_MULTIPLIER} y {MAX_STRATEGY_MULTIPLIER}.\n"
+        "Responde SOLO un objeto JSON con las claves: "
+        '{"wage_multiplier": number, "target_zone": integer|null, '
+        '"reasoning": string de menos de 30 palabras que explique el '
+        'multiplicador que elegiste, "confidence": "low"|"medium"|"high"}'
     )
 
     def propose(self, context: dict[str, Any]) -> ModelProposal:
-        # La credencial primero: es lo que los jueces invalidan, y revisarla
-        # antes de importar nada mantiene el diagnostico exacto aunque el SDK
-        # tampoco este instalado.
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        api_key = os.environ.get(GEMINI_API_KEY_ENV)
         if not api_key:
-            raise ModelUnavailable("ANTHROPIC_API_KEY ausente o vacia en el entorno")
+            raise ModelUnavailable(f"{GEMINI_API_KEY_ENV} ausente o vacia en el entorno")
+
+        cuerpo = json.dumps(
+            {
+                "systemInstruction": {"parts": [{"text": self._SYSTEM}]},
+                "contents": [
+                    {"parts": [{"text": json.dumps(context, default=str, ensure_ascii=False)}]}
+                ],
+                # La API devuelve JSON valido o falla; no hay que desenvolver
+                # vallas de markdown ni adivinar donde empieza el objeto.
+                #
+                # camelCase a proposito: es la forma canonica del JSON de
+                # protobuf que usa la API REST. snake_case tambien se acepta,
+                # pero mezclarlos deja una ambiguedad que solo se descubre en
+                # vivo, y esta llamada corre en la demo.
+                "generationConfig": {"responseMimeType": "application/json"},
+            }
+        ).encode("utf-8")
+
+        peticion = urllib.request.Request(
+            GEMINI_ENDPOINT.format(model=self.model),
+            data=cuerpo,
+            headers={"Content-Type": "application/json", "X-goog-api-key": api_key},
+            method="POST",
+        )
 
         try:
-            import anthropic
-        except ImportError as exc:  # el SDK no esta instalado: mismo efecto que sin red
-            raise ModelUnavailable(f"SDK anthropic no disponible: {exc}") from exc
-
-        try:
-            client = anthropic.Anthropic(
-                api_key=api_key,
-                timeout=self.timeout_seconds,
-                max_retries=0,
-            )
-            response = client.messages.create(
-                model=self.model,
-                max_tokens=4096,
-                system=self._SYSTEM,
-                output_config={"effort": "low"},
-                messages=[{"role": "user", "content": json.dumps(context, default=str)}],
-            )
+            with urllib.request.urlopen(peticion, timeout=self.timeout_seconds) as respuesta:
+                payload = json.loads(respuesta.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            # El codigo importa para diagnosticar en vivo: 400 con
+            # API_KEY_INVALID es la credencial revocada (lo que hacen los
+            # jueces), 429 es cuota, 5xx es del proveedor.
+            raise ModelUnavailable(f"HTTP {exc.code} de Gemini: {_http_detail(exc)}") from exc
         except Exception as exc:
-            # Credencial invalida (401), sin red, timeout, sobrecarga: para esta
-            # capa son el mismo evento -- "el modelo no esta" -- y se tratan
-            # igual. El detalle exacto se conserva en status().
             raise ModelUnavailable(f"{type(exc).__name__}: {exc}") from exc
 
-        return _parse_proposal(response)
+        return _proposal_from_text(_gemini_text(payload))
 
 
-def _parse_proposal(response: Any) -> ModelProposal:
-    """Extrae la propuesta del response. Una respuesta ilegible es una caida."""
-    text = "".join(
-        block.text for block in getattr(response, "content", []) if getattr(block, "type", "") == "text"
-    ).strip()
+def _http_detail(exc: "urllib.error.HTTPError") -> str:
+    """Mensaje del error de la API, recortado. Sin volver a lanzar si el
+    cuerpo no se puede leer -- estamos ya en el camino de fallo."""
+    try:
+        cuerpo = json.loads(exc.read().decode("utf-8"))
+        return str(cuerpo.get("error", {}).get("message", ""))[:200] or exc.reason
+    except Exception:
+        return str(exc.reason)
+
+
+def _gemini_text(payload: dict[str, Any]) -> str:
+    """Texto de la primera candidata. Cadena vacia si la respuesta no tiene
+    la forma esperada -- `_proposal_from_text` la tratara como ilegible, que
+    es el mismo camino que cualquier otra caida."""
+    try:
+        partes = payload["candidates"][0]["content"]["parts"]
+    except (KeyError, IndexError, TypeError):
+        return ""
+    return "".join(str(parte.get("text", "")) for parte in partes).strip()
+
+
+def _proposal_from_text(text: str) -> ModelProposal:
+    """Convierte el texto del modelo en una propuesta.
+
+    Agnostico del proveedor a proposito: recibe una cadena, no un objeto de
+    SDK. Cambiar de API no deberia tocar el parseo, y con esta firma se puede
+    probar sin red ni credencial.
+
+    Una respuesta ilegible es una caida, no una excepcion que suba: el modelo
+    que contesta cualquier cosa es tan inservible como el que no contesta.
+    """
+    text = (text or "").strip()
 
     if text.startswith("```"):
         text = text.strip("`")
@@ -277,13 +401,27 @@ def _parse_proposal(response: Any) -> ModelProposal:
     except (json.JSONDecodeError, TypeError) as exc:
         raise ModelUnavailable(f"respuesta del modelo ilegible: {exc}") from exc
 
-    if not isinstance(data, dict) or "reservation_wage_mxn_hr" not in data:
-        raise ModelUnavailable("respuesta del modelo sin reservation_wage_mxn_hr")
+    if not isinstance(data, dict):
+        raise ModelUnavailable("la respuesta del modelo no es un objeto")
 
-    try:
-        wage = float(data["reservation_wage_mxn_hr"])
-    except (TypeError, ValueError) as exc:
-        raise ModelUnavailable(f"reservation_wage_mxn_hr no numerico: {exc}") from exc
+    # Se acepta el multiplicador (lo que se le pide hoy) y tambien la cifra
+    # absoluta: los eventos `strategy_update` ya grabados en los turnos la
+    # llevan, y un replay tiene que poder reinyectarlos sin traducir nada.
+    if "wage_multiplier" in data:
+        try:
+            multiplicador = float(data["wage_multiplier"])
+        except (TypeError, ValueError) as exc:
+            raise ModelUnavailable(f"wage_multiplier no numerico: {exc}") from exc
+        wage = DEFAULT_RESERVATION_WAGE_MXN_HR * multiplicador
+    elif "reservation_wage_mxn_hr" in data:
+        try:
+            wage = float(data["reservation_wage_mxn_hr"])
+        except (TypeError, ValueError) as exc:
+            raise ModelUnavailable(f"reservation_wage_mxn_hr no numerico: {exc}") from exc
+    else:
+        raise ModelUnavailable(
+            "respuesta del modelo sin wage_multiplier ni reservation_wage_mxn_hr"
+        )
 
     zone = data.get("target_zone")
     confidence = data.get("confidence")
@@ -321,6 +459,10 @@ class StrategyLayer:
         self._last_success_sim_time: datetime | None = None
         self._last_refresh_sim_time: datetime | None = None
         self._worker: threading.Thread | None = None
+
+        # En modo replay los parametros quedan CLAVADOS: `maybe_refresh` no
+        # despacha nada. Ver `apply_recorded`.
+        self._replay_pinned = False
 
     # -- lectura del fast path --------------------------------------------
 
@@ -360,6 +502,18 @@ class StrategyLayer:
         vuelo (un solo vuelo a la vez: sin esto, un modelo lento acumularia
         llamadas y cada una publicaria parametros mas viejos que la anterior).
         """
+        if not getattr(self._advisor, "available", True):
+            # Sin modelo detras no hay nada que preguntar, y sobre todo no hay
+            # nada que pueda fallar: dispararlo igual marcaria `degraded` por
+            # una caida que no ocurrio (ver NullAdvisor).
+            return False
+
+        if self._replay_pinned:
+            # Reproduciendo un turno grabado: los parametros son los del log y
+            # no se tocan. Es lo que hace que el diff de decisiones mida
+            # nuestro determinismo y no el del modelo.
+            return False
+
         if sim_time is not None and self._last_refresh_sim_time is not None:
             elapsed = (sim_time - self._last_refresh_sim_time).total_seconds() / 60.0
             if elapsed < self._refresh_interval:
@@ -387,7 +541,12 @@ class StrategyLayer:
         Para tests y para el ensayo en vivo del modo degradado: permite
         provocar la caida y ver el flag cambiar sin esperar a que pase el
         intervalo de simulacion.
+
+        Respeta la misma regla que `maybe_refresh`: un advisor no disponible no
+        se consulta, asi que no puede degradar la capa.
         """
+        if not getattr(self._advisor, "available", True):
+            return self._params
         with self._lock:
             self._in_flight = True
         self._run_refresh(sim_time, context)
@@ -468,15 +627,35 @@ class StrategyLayer:
 
     # -- replay -------------------------------------------------------------
 
-    def apply_recorded(self, event: dict[str, Any]) -> StrategyParams:
-        """Fija los parametros desde un evento `strategy_update` grabado.
+    @property
+    def replay_pinned(self) -> bool:
+        """True mientras los parametros estan clavados por un replay."""
+        return self._replay_pinned
 
-        Es la respuesta al check de replay del protocolo (seccion 6): al
-        reproducir un turno no se vuelve a llamar al modelo, se reinyecta lo
-        que el modelo dijo entonces. Asi el no-determinismo del modelo no puede
-        mover ni una decision del fast path.
+    def apply_recorded(self, event: dict[str, Any]) -> StrategyParams:
+        """Fija los parametros desde un evento `strategy_update` grabado y
+        **entra en modo replay**.
+
+        Es la respuesta al check de replay del protocolo (seccion 6):
+
+            "Strategy-layer parameters may vary slightly from model
+             non-determinism, provided no fast-path decision changes as a
+             result."
+
+        Esa licencia no nos sirve tal cual, porque en nuestro diseño el
+        parametro de tier2 **si** cambia decisiones: `reservation_wage_mxn_hr`
+        es el umbral contra el que se compara la tasa efectiva. Si el modelo
+        publicara una revision nueva a media reproduccion, el diff saldria
+        distinto y no seria por un bug sino por diseño.
+
+        Por eso reinyectar no basta con fijar el valor: ademas **clava** la
+        capa. Mientras dure el replay, `maybe_refresh` no despacha nada, asi
+        que no hay forma de que el modelo mueva el umbral por debajo. Se sale
+        con `resume_live()`.
         """
-        wage, _ = _clamp_wage(float(event.get("reservation_wage_mxn_hr", DEFAULT_RESERVATION_WAGE_MXN_HR)))
+        wage, _ = _clamp_absolute(
+            float(event.get("reservation_wage_mxn_hr", DEFAULT_RESERVATION_WAGE_MXN_HR))
+        )
         zone = event.get("target_zone")
         confidence = event.get("confidence")
 
@@ -491,7 +670,18 @@ class StrategyLayer:
                 source="recorded",
             )
         )
+        self._replay_pinned = True
         return self._params
+
+    def resume_live(self) -> None:
+        """Sale del modo replay: tier2 vuelve a poder publicar parametros.
+
+        No restaura los parametros anteriores a proposito -- los del log son
+        tan validos como cualquier otro punto de partida, y volver atras
+        inventaria una revision que nunca existio.
+        """
+        self._replay_pinned = False
+        self._last_refresh_sim_time = None
 
     # -- event log ---------------------------------------------------------
 
@@ -531,7 +721,29 @@ class StrategyLayer:
 
 
 def _clamp_wage(value: float) -> tuple[float, bool]:
-    """Recorta a las cotas. Devuelve (valor, se_recorto)."""
+    """Recorta una PROPUESTA del modelo. Devuelve (valor, se_recorto).
+
+    Dos cinturones, y el que hace el trabajo es el relativo: tier2 puede mover
+    el umbral CALIBRADO dentro de una banda, no proponer cualquier cifra. El
+    optimo se midio sobre 12 turnos held-out y el modelo no ha visto ninguno;
+    dejarle reescribirlo entero es darle a un asesor la llave de la caja.
+    """
+    banda_baja = DEFAULT_RESERVATION_WAGE_MXN_HR * MIN_STRATEGY_MULTIPLIER
+    banda_alta = DEFAULT_RESERVATION_WAGE_MXN_HR * MAX_STRATEGY_MULTIPLIER
+    clamped = max(banda_baja, min(banda_alta, value))
+    return _clamp_absolute(clamped)[0], clamped != value
+
+
+def _clamp_absolute(value: float) -> tuple[float, bool]:
+    """Recorta solo a las cotas duras, sin la banda relativa.
+
+    Es lo que se aplica a un valor GRABADO. La banda relativa vigila lo que el
+    modelo propone; un valor que ya ocurrio en un turno no es una propuesta, es
+    un hecho, y recortarlo al reinyectarlo haria que el replay produjera
+    decisiones distintas de las que se grabaron -- justo lo que el diff del
+    protocolo (seccion 6) existe para detectar. Las cotas duras se mantienen
+    porque un log corrupto tampoco deberia poder meter un umbral absurdo.
+    """
     clamped = max(MIN_RESERVATION_WAGE_MXN_HR, min(MAX_RESERVATION_WAGE_MXN_HR, value))
     return clamped, clamped != value
 
@@ -540,7 +752,7 @@ def _clamp_wage(value: float) -> tuple[float, bool]:
 # Instancia compartida del proceso, igual que JOURNAL.
 #
 # Arranca con NullAdvisor: el sistema entero corre sin red y sin key. Para
-# activar tier2 de verdad: STRATEGY.use_advisor(ClaudeAdvisor()) en el arranque.
+# activar tier2 de verdad: STRATEGY.use_advisor(GeminiAdvisor()) en el arranque.
 # ==========================================================================
 
 STRATEGY = StrategyLayer()

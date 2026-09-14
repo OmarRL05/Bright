@@ -16,5 +16,8 @@ numpy==2.2.1
 pytest==8.3.4
 httpx==0.28.1
 
-# Capa de estrategia (tier2, fuera de la ventana de decision)
-anthropic>=1.0
+# La capa de estrategia (tier2) habla con Gemini por HTTP con urllib de la
+# biblioteca estandar: una sola peticion JSON corta, sin reintentos por
+# diseño. Un SDK no aportaria nada que aqui se use y seria una dependencia
+# mas que puede faltar en la maquina de la demo -- justo en el unico camino
+# cuyo fallo hay que demostrar en vivo.
