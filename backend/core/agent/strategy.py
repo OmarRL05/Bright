@@ -149,7 +149,7 @@ MODEL_TIMEOUT_SECONDS = 30.0
 #: `gemini-flash-latest` devolvia HTTP 503 ("high demand") de forma sostenida
 #: y `gemini-2.5-flash` responde 404 para este proyecto aunque aparezca en la
 #: lista de modelos. Este contesta.
-MODEL_ID = "gemini-3.5-flash"
+MODEL_ID = "gemini-3.8-flash"
 
 #: Endpoint de la API de Gemini. La clave viaja en la cabecera
 #: `X-goog-api-key`, no en la URL: en la URL acabaria en los logs de acceso de
